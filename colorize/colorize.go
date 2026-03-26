@@ -58,12 +58,12 @@ type Params struct {
 
 // Result holds the colorized output and statistics.
 type Result struct {
-	RGBA   *image.RGBA
-	MinC   float32 // min temperature in frame (°C)
-	MaxC   float32 // max temperature in frame (°C)
-	MinX, MinY int  // pixel position of min temp
-	MaxX, MaxY int  // pixel position of max temp
-	Width  int
+	RGBA       *image.RGBA
+	MinC       float32 // min temperature in frame (°C)
+	MaxC       float32 // max temperature in frame (°C)
+	MinX, MinY int     // pixel position of min temp
+	MaxX, MaxY int     // pixel position of max temp
+	Width      int
 	// Celsius holds per-pixel temps for cursor lookup (same layout as frame).
 	Celsius []float32
 }
@@ -203,7 +203,7 @@ func (r *Result) Rotate(steps int) *Result {
 	steps = steps % 4
 	if steps == 0 || r.RGBA == nil {
 		return r
-	}  
+	}
 
 	srcW := r.RGBA.Bounds().Dx()
 	srcH := r.RGBA.Bounds().Dy()

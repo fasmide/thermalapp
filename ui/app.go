@@ -31,6 +31,11 @@ import (
 	"thermalapp/colorize"
 )
 
+// fixedPoint is a user-placed measurement point in image pixel coordinates.
+type fixedPoint struct {
+	X, Y int
+}
+
 // App holds the UI and shared state.
 type App struct {
 	Window *app.Window
@@ -64,6 +69,10 @@ type App struct {
 	// Toggles
 	showColorbar bool
 	showHelp     bool
+	showLabels   bool
+
+	// User-placed measurement points (image pixel coords)
+	fixedPoints []fixedPoint
 
 	// Toast notification
 	toastMsg    string
@@ -136,6 +145,8 @@ func (a *App) handleKeys(gtx layout.Context) {
 		key.Filter{Name: "V"},
 		key.Filter{Name: key.NameSpace},
 		key.Filter{Name: "R"},
+		key.Filter{Name: "T"},
+		key.Filter{Name: "X"},
 	}
 
 	for {
@@ -199,6 +210,12 @@ func (a *App) handleKeys(gtx layout.Context) {
 		case "R":
 			a.rotation = (a.rotation + 1) % 4
 
+		case "T":
+			a.showLabels = !a.showLabels
+
+		case "X":
+			a.fixedPoints = nil
+
 		case key.NameSpace:
 			a.mu.Lock()
 			r := a.result
@@ -215,7 +232,7 @@ func (a *App) handlePointer(gtx layout.Context) {
 	filters := []event.Filter{
 		pointer.Filter{
 			Target: &a.tag,
-			Kinds:  pointer.Move | pointer.Enter | pointer.Leave,
+			Kinds:  pointer.Move | pointer.Enter | pointer.Leave | pointer.Press,
 		},
 	}
 
@@ -249,6 +266,32 @@ func (a *App) handlePointer(gtx layout.Context) {
 			} else {
 				a.cursorValid = false
 			}
+		case pointer.Press:
+			// Add or remove a fixed measurement point
+			imgX := int((pe.Position.X - float32(a.imgOffsetX)) / a.imgScale)
+			imgY := int((pe.Position.Y - float32(a.imgOffsetY)) / a.imgScale)
+
+			a.mu.Lock()
+			r := a.result
+			a.mu.Unlock()
+
+			if r != nil && imgX >= 0 && imgY >= 0 && imgX < r.RGBA.Bounds().Dx() && imgY < r.RGBA.Bounds().Dy() {
+				// Check if clicking near an existing point (within 5px) to remove it
+				removed := false
+				for i, p := range a.fixedPoints {
+					dx := p.X - imgX
+					dy := p.Y - imgY
+					if dx*dx+dy*dy < 25 {
+						a.fixedPoints = append(a.fixedPoints[:i], a.fixedPoints[i+1:]...)
+						removed = true
+						break
+					}
+				}
+				if !removed {
+					a.fixedPoints = append(a.fixedPoints, fixedPoint{X: imgX, Y: imgY})
+				}
+			}
+
 		case pointer.Leave:
 			a.cursorValid = false
 		}
@@ -393,7 +436,83 @@ func (a *App) layoutImage(gtx layout.Context, result *colorize.Result) layout.Di
 		s.Pop()
 	}
 
+	// Draw user-placed fixed points (green)
+	for _, p := range a.fixedPoints {
+		px := offsetX + int(float32(p.X)*scale+scale/2) - markerSize
+		py := offsetY + int(float32(p.Y)*scale+scale/2) - markerSize
+		sz := markerSize * 2
+		s := clip.Rect{Min: image.Pt(px, py), Max: image.Pt(px+sz, py+sz)}.Push(gtx.Ops)
+		paint.Fill(gtx.Ops, color.NRGBA{R: 60, G: 220, B: 60, A: 230})
+		s.Pop()
+	}
+
+	// Temperature labels on markers
+	if a.showLabels {
+		imgW := result.RGBA.Bounds().Dx()
+
+		// Min label
+		minIdx := int(a.smMinY)*imgW + int(a.smMinX)
+		if minIdx >= 0 && minIdx < len(result.Celsius) {
+			a.drawTempLabel(gtx, offsetX+int(a.smMinX*scale+scale/2), offsetY+int(a.smMinY*scale)-2,
+				result.Celsius[minIdx], color.NRGBA{R: 60, G: 120, B: 255, A: 230})
+		}
+
+		// Max label
+		maxIdx := int(a.smMaxY)*imgW + int(a.smMaxX)
+		if maxIdx >= 0 && maxIdx < len(result.Celsius) {
+			a.drawTempLabel(gtx, offsetX+int(a.smMaxX*scale+scale/2), offsetY+int(a.smMaxY*scale)-2,
+				result.Celsius[maxIdx], color.NRGBA{R: 255, G: 60, B: 60, A: 230})
+		}
+
+		// Fixed point labels
+		for _, p := range a.fixedPoints {
+			idx := p.Y*imgW + p.X
+			if idx >= 0 && idx < len(result.Celsius) {
+				a.drawTempLabel(gtx, offsetX+int(float32(p.X)*scale+scale/2), offsetY+int(float32(p.Y)*scale)-2,
+					result.Celsius[idx], color.NRGBA{R: 60, G: 220, B: 60, A: 230})
+			}
+		}
+	} else {
+		// Even without labels, show temps on fixed points
+		imgW := result.RGBA.Bounds().Dx()
+		for _, p := range a.fixedPoints {
+			idx := p.Y*imgW + p.X
+			if idx >= 0 && idx < len(result.Celsius) {
+				a.drawTempLabel(gtx, offsetX+int(float32(p.X)*scale+scale/2), offsetY+int(float32(p.Y)*scale)-2,
+					result.Celsius[idx], color.NRGBA{R: 60, G: 220, B: 60, A: 230})
+			}
+		}
+	}
+
 	return layout.Dimensions{Size: gtx.Constraints.Max}
+}
+
+// drawTempLabel draws a temperature reading with a small background tag at the given screen position.
+func (a *App) drawTempLabel(gtx layout.Context, sx, sy int, temp float32, col color.NRGBA) {
+	txt := fmt.Sprintf("%.1f\u00b0", temp)
+
+	// Measure
+	macro := op.Record(gtx.Ops)
+	gtx.Constraints.Min = image.Point{}
+	dims := layout.Inset{Left: unit.Dp(3), Right: unit.Dp(3), Top: unit.Dp(1), Bottom: unit.Dp(1)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+		lbl := material.Caption(a.theme, txt)
+		lbl.Color = color.NRGBA{R: 255, G: 255, B: 255, A: 255}
+		return lbl.Layout(gtx)
+	})
+	call := macro.Stop()
+
+	// Position: center horizontally above the marker
+	ox := sx - dims.Size.X/2
+	oy := sy - dims.Size.Y
+	s := op.Offset(image.Pt(ox, oy)).Push(gtx.Ops)
+
+	// Background pill
+	pill := clip.Rect{Max: dims.Size}.Push(gtx.Ops)
+	paint.Fill(gtx.Ops, col)
+	pill.Pop()
+
+	call.Add(gtx.Ops)
+	s.Pop()
 }
 
 func (a *App) layoutColorbar(gtx layout.Context, result *colorize.Result) layout.Dimensions {
@@ -470,7 +589,7 @@ func (a *App) layoutStatus(gtx layout.Context, result *colorize.Result) layout.D
 		gainStr = "Low"
 	}
 
-	status := fmt.Sprintf("[C] %-10s  |  [A] %-10s  |  [G] Gain: %-4s  |  [R] %d\u00b0%s  |  [H] Help",
+	status := fmt.Sprintf("[C] %-10s  |  [A] %-10s  |  [G] Gain: %-4s  |  [R] %d\u00b0  |  [T] Labels%s  |  [H] Help",
 		p.Palette, agcName(p.Mode), gainStr, a.rotation*90, cursor)
 
 	return layout.Background{}.Layout(gtx,
@@ -500,7 +619,10 @@ func (a *App) layoutHelp(gtx layout.Context) {
 		{"G", "Toggle gain (High/Low)"},
 		{"S", "Trigger shutter/NUC"},
 		{"R", "Rotate 90\u00b0"},
+		{"T", "Toggle temp labels"},
 		{"V", "Toggle colorbar"},
+		{"X", "Clear fixed points"},
+		{"Click", "Place/remove point"},
 		{"Space", "Save screenshot (PNG)"},
 		{"H", "Toggle this help"},
 	}
