@@ -13,8 +13,8 @@ import (
 	"gioui.org/op"
 	"gioui.org/op/clip"
 	"gioui.org/op/paint"
-	"gioui.org/text"
 	"gioui.org/unit"
+	"gioui.org/widget"
 	"gioui.org/widget/material"
 
 	"thermalapp/colorize"
@@ -22,11 +22,13 @@ import (
 
 // GraphWindow manages a separate window displaying a temperature graph for a Spot.
 type GraphWindow struct {
-	spot   *Spot
-	window *app.Window
-	theme  *material.Theme
-	closed bool
-	mu     sync.Mutex
+	spot        *Spot
+	window      *app.Window
+	theme       *material.Theme
+	closed      bool
+	mu          sync.Mutex
+	epsDropdown *EmissivityDropdown
+	epsClick    widget.Clickable
 }
 
 // NewGraphWindow creates and opens a new graph window for the given spot.
@@ -39,9 +41,10 @@ func NewGraphWindow(spot *Spot) *GraphWindow {
 		app.Size(unit.Dp(600), unit.Dp(250)),
 	)
 	gw := &GraphWindow{
-		spot:   spot,
-		window: &w,
-		theme:  material.NewTheme(),
+		spot:        spot,
+		window:      &w,
+		theme:       material.NewTheme(),
+		epsDropdown: NewEmissivityDropdown(),
 	}
 	go gw.run()
 	return gw
@@ -82,7 +85,7 @@ func (gw *GraphWindow) run() {
 }
 
 func (gw *GraphWindow) layoutGraph(gtx layout.Context) layout.Dimensions {
-	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+	dims := layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 		// Title bar
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 			spot := gw.spot
@@ -101,22 +104,61 @@ func (gw *GraphWindow) layoutGraph(gtx layout.Context) layout.Dimensions {
 			st := spot.Stats()
 			dur := st.Duration.Truncate(time.Second)
 
-			epsStr := "global"
+			epsLabel := " e: global "
 			if spot.EmissivityIdx >= 0 && spot.EmissivityIdx < len(colorize.EmissivityPresets) {
 				p := colorize.EmissivityPresets[spot.EmissivityIdx]
-				epsStr = fmt.Sprintf("%.2f %s", p.Emissivity, p.Name)
+				epsLabel = fmt.Sprintf(" e: %.2f %s ", p.Emissivity, p.Name)
 			}
 
-			title := fmt.Sprintf("Spot %d (%s)  |  ε: %s  |  Now: %.1f°C  |  Min: %.1f  Max: %.1f  Mean: %.1f  σ: %.2f  |  %d samples / %s",
-				spot.Index, kindStr, epsStr, st.Current,
-				st.Min, st.Max, st.Mean, st.StdDev,
-				st.Count, dur)
+			leftTitle := fmt.Sprintf("Spot %d (%s)  |", spot.Index, kindStr)
+			rightTitle := fmt.Sprintf("|  Now: %.1f°C  |  Min: %.1f  Max: %.1f  Mean: %.1f  s: %.2f  |  %d / %s",
+				st.Current, st.Min, st.Max, st.Mean, st.StdDev, st.Count, dur)
 
-			return layout.UniformInset(unit.Dp(6)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-				lbl := material.Body2(gw.theme, title)
-				lbl.Color = color.NRGBA{R: 220, G: 220, B: 220, A: 255}
-				lbl.Alignment = text.Middle
-				return lbl.Layout(gtx)
+			lightGray := color.NRGBA{R: 220, G: 220, B: 220, A: 255}
+
+			currentIdx := spot.EmissivityIdx
+			if gw.epsClick.Clicked(gtx) {
+				gw.epsDropdown.Toggle(currentIdx)
+			}
+
+			return layout.UniformInset(unit.Dp(4)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+				return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						lbl := material.Body2(gw.theme, leftTitle)
+						lbl.Color = lightGray
+						return lbl.Layout(gtx)
+					}),
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						return material.Clickable(gtx, &gw.epsClick, func(gtx layout.Context) layout.Dimensions {
+							return layout.Background{}.Layout(gtx,
+								func(gtx layout.Context) layout.Dimensions {
+									bgCol := color.NRGBA{R: 50, G: 50, B: 50, A: 255}
+									if gw.epsClick.Hovered() {
+										bgCol = color.NRGBA{R: 70, G: 70, B: 70, A: 255}
+									}
+									if gw.epsDropdown.IsOpen() {
+										bgCol = color.NRGBA{R: 60, G: 90, B: 160, A: 255}
+									}
+									defer clip.Rect{Max: gtx.Constraints.Min}.Push(gtx.Ops).Pop()
+									paint.Fill(gtx.Ops, bgCol)
+									return layout.Dimensions{Size: gtx.Constraints.Min}
+								},
+								func(gtx layout.Context) layout.Dimensions {
+									return layout.Inset{Left: unit.Dp(6), Right: unit.Dp(6), Top: unit.Dp(2), Bottom: unit.Dp(2)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+										lbl := material.Body2(gw.theme, epsLabel)
+										lbl.Color = lightGray
+										return lbl.Layout(gtx)
+									})
+								},
+							)
+						})
+					}),
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						lbl := material.Body2(gw.theme, rightTitle)
+						lbl.Color = lightGray
+						return lbl.Layout(gtx)
+					}),
+				)
 			})
 		}),
 		// Graph area
@@ -124,6 +166,20 @@ func (gw *GraphWindow) layoutGraph(gtx layout.Context) layout.Dimensions {
 			return gw.drawGraph(gtx)
 		}),
 	)
+
+	// Emissivity dropdown overlay
+	if gw.epsDropdown.IsOpen() {
+		currentIdx := gw.spot.EmissivityIdx
+		// For per-spot, -1 means "global" — map to preset list idx
+		displayIdx := currentIdx
+		if sel := gw.epsDropdown.Layout(gtx, gw.theme, displayIdx); sel >= 0 {
+			gw.spot.EmissivityIdx = sel
+			preset := colorize.EmissivityPresets[sel]
+			gw.spot.Emissivity = preset.Emissivity
+		}
+	}
+
+	return dims
 }
 
 func (gw *GraphWindow) drawGraph(gtx layout.Context) layout.Dimensions {

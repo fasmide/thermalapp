@@ -23,8 +23,8 @@ import (
 	"gioui.org/op"
 	"gioui.org/op/clip"
 	"gioui.org/op/paint"
-	"gioui.org/text"
 	"gioui.org/unit"
+	"gioui.org/widget"
 	"gioui.org/widget/material"
 
 	"thermalapp/camera"
@@ -67,6 +67,10 @@ type App struct {
 	// Selected spot index for per-spot emissivity (-1 = none)
 	selectedSpot int
 
+	// Emissivity dropdown
+	epsDropdown *EmissivityDropdown
+	epsClick    widget.Clickable
+
 	// Toggles
 	showColorbar bool
 	showHelp     bool
@@ -103,6 +107,7 @@ func NewApp(cam camera.Camera) *App {
 		},
 		graphs:       make(map[int]*GraphWindow),
 		selectedSpot: -1,
+		epsDropdown:  NewEmissivityDropdown(),
 		showColorbar: true,
 		showLabels:   true,
 	}
@@ -246,7 +251,9 @@ func (a *App) handleKeys(gtx layout.Context) {
 
 		switch ke.Name {
 		case "Q", key.NameEscape:
-			if ke.Name == key.NameEscape && a.selectedSpot >= 0 {
+			if ke.Name == key.NameEscape && a.epsDropdown.IsOpen() {
+				a.epsDropdown.Close()
+			} else if ke.Name == key.NameEscape && a.selectedSpot >= 0 {
 				a.selectedSpot = -1
 			} else {
 				a.Window.Perform(system.ActionClose)
@@ -533,6 +540,22 @@ func (a *App) doLayout(gtx layout.Context) layout.Dimensions {
 		a.layoutHelp(gtx)
 	}
 
+	// Emissivity dropdown overlay
+	if a.epsDropdown.IsOpen() {
+		a.mu.Lock()
+		eIdx := a.emissivityIdx
+		a.mu.Unlock()
+		if sel := a.epsDropdown.Layout(gtx, a.theme, eIdx); sel >= 0 {
+			a.mu.Lock()
+			a.emissivityIdx = sel
+			preset := colorize.EmissivityPresets[sel]
+			a.params.Emissivity = preset.Emissivity
+			a.toastMsg = fmt.Sprintf("ε = %.2f  %s", preset.Emissivity, preset.Name)
+			a.toastExpiry = time.Now().Add(2 * time.Second)
+			a.mu.Unlock()
+		}
+	}
+
 	// Toast overlay
 	a.mu.Lock()
 	msg := a.toastMsg
@@ -816,24 +839,71 @@ func (a *App) layoutStatus(gtx layout.Context, result *colorize.Result) layout.D
 	}
 
 	preset := colorize.EmissivityPresets[eIdx]
-	epsStr := fmt.Sprintf("%.2f %s", preset.Emissivity, preset.Name)
+	epsLabel := fmt.Sprintf(" e: %.2f %s ", preset.Emissivity, preset.Name)
 
-	status := fmt.Sprintf("[C] %-10s  |  [A] %-10s  |  [G] Gain: %-4s  |  [E] ε: %s  |  [R] %d\u00b0  |  [T] Labels  |  [H] Help",
-		p.Palette, agcName(p.Mode), gainStr, epsStr, a.rotation*90)
+	leftStatus := fmt.Sprintf("[C] %-10s  |  [A] %-10s  |  [G] Gain: %-4s  |",
+		p.Palette, agcName(p.Mode), gainStr)
+	rightStatus := fmt.Sprintf("|  [R] %d\u00b0  |  [H] Help", a.rotation*90)
+
+	lightGray := color.NRGBA{R: 220, G: 220, B: 220, A: 255}
+
+	// Handle emissivity button click
+	if a.epsClick.Clicked(gtx) {
+		a.epsDropdown.Toggle(eIdx)
+	}
 
 	return layout.Background{}.Layout(gtx,
 		func(gtx layout.Context) layout.Dimensions {
-			// Dark background
 			defer clip.Rect{Max: gtx.Constraints.Min}.Push(gtx.Ops).Pop()
 			paint.Fill(gtx.Ops, color.NRGBA{R: 30, G: 30, B: 30, A: 255})
 			return layout.Dimensions{Size: gtx.Constraints.Min}
 		},
 		func(gtx layout.Context) layout.Dimensions {
-			return layout.UniformInset(unit.Dp(6)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-				lbl := material.Body2(a.theme, status)
-				lbl.Color = color.NRGBA{R: 220, G: 220, B: 220, A: 255}
-				lbl.Alignment = text.Middle
-				return lbl.Layout(gtx)
+			return layout.UniformInset(unit.Dp(4)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+				return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle, Spacing: layout.SpaceStart}.Layout(gtx,
+					layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+						return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle, Spacing: layout.SpaceSides}.Layout(gtx,
+							// Left section
+							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+								lbl := material.Body2(a.theme, leftStatus)
+								lbl.Color = lightGray
+								return lbl.Layout(gtx)
+							}),
+							// Clickable emissivity button
+							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+								return material.Clickable(gtx, &a.epsClick, func(gtx layout.Context) layout.Dimensions {
+									return layout.Background{}.Layout(gtx,
+										func(gtx layout.Context) layout.Dimensions {
+											bgCol := color.NRGBA{R: 50, G: 50, B: 50, A: 255}
+											if a.epsClick.Hovered() {
+												bgCol = color.NRGBA{R: 70, G: 70, B: 70, A: 255}
+											}
+											if a.epsDropdown.IsOpen() {
+												bgCol = color.NRGBA{R: 60, G: 90, B: 160, A: 255}
+											}
+											defer clip.Rect{Max: gtx.Constraints.Min}.Push(gtx.Ops).Pop()
+											paint.Fill(gtx.Ops, bgCol)
+											return layout.Dimensions{Size: gtx.Constraints.Min}
+										},
+										func(gtx layout.Context) layout.Dimensions {
+											return layout.Inset{Left: unit.Dp(6), Right: unit.Dp(6), Top: unit.Dp(2), Bottom: unit.Dp(2)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+												lbl := material.Body2(a.theme, epsLabel)
+												lbl.Color = lightGray
+												return lbl.Layout(gtx)
+											})
+										},
+									)
+								})
+							}),
+							// Right section
+							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+								lbl := material.Body2(a.theme, rightStatus)
+								lbl.Color = lightGray
+								return lbl.Layout(gtx)
+							}),
+						)
+					}),
+				)
 			})
 		},
 	)
