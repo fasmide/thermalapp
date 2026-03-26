@@ -61,6 +61,75 @@ func NewSpot(index int, kind SpotKind, col color.NRGBA) *Spot {
 	}
 }
 
+// SpotState is a point-in-time snapshot of a spot's mutable fields.
+// Used by the UI goroutine to read spot state without holding the lock.
+type SpotState struct {
+	X, Y          float32
+	Active        bool
+	Emissivity    float32
+	EmissivityIdx int
+}
+
+// GetState returns a snapshot of the spot's mutable fields. Safe for concurrent use.
+func (s *Spot) GetState() SpotState {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return SpotState{
+		X:             s.X,
+		Y:             s.Y,
+		Active:        s.Active,
+		Emissivity:    s.Emissivity,
+		EmissivityIdx: s.EmissivityIdx,
+	}
+}
+
+// SetPosition updates spot coordinates and active flag. Safe for concurrent use.
+func (s *Spot) SetPosition(x, y float32, active bool) {
+	s.mu.Lock()
+	s.X = x
+	s.Y = y
+	s.Active = active
+	s.mu.Unlock()
+}
+
+// SetActive sets the active flag. Safe for concurrent use.
+func (s *Spot) SetActive(active bool) {
+	s.mu.Lock()
+	s.Active = active
+	s.mu.Unlock()
+}
+
+// UpdateEMA applies exponential moving average to the position. Safe for concurrent use.
+func (s *Spot) UpdateEMA(newX, newY, alpha float32) {
+	s.mu.Lock()
+	s.X += alpha * (newX - s.X)
+	s.Y += alpha * (newY - s.Y)
+	s.Active = true
+	s.mu.Unlock()
+}
+
+// SetEmissivity sets per-spot emissivity override. Safe for concurrent use.
+func (s *Spot) SetEmissivity(eps float32, idx int) {
+	s.mu.Lock()
+	s.Emissivity = eps
+	s.EmissivityIdx = idx
+	s.mu.Unlock()
+}
+
+// GetEmissivity returns per-spot emissivity. Safe for concurrent use.
+func (s *Spot) GetEmissivity() (float32, int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.Emissivity, s.EmissivityIdx
+}
+
+// GetPosition returns the spot's current coordinates. Safe for concurrent use.
+func (s *Spot) GetPosition() (float32, float32) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.X, s.Y
+}
+
 // Record adds a temperature sample. Safe for concurrent use.
 func (s *Spot) Record(temp float32) {
 	s.mu.Lock()
@@ -173,16 +242,18 @@ func (s *Spot) Stats() SpotStats {
 // CorrectedTemp returns the temperature at this spot, applying per-spot
 // emissivity correction if Emissivity > 0. The globalTemp is the celsius
 // value already corrected for the global emissivity. globalEps and ambientC
-// are from the colorize Result.
+// are from the colorize Result. Safe for concurrent use.
 func (s *Spot) CorrectedTemp(globalTemp, globalEps, ambientC float32) float32 {
-	if s.Emissivity <= 0 || s.Emissivity == globalEps {
-		return globalTemp // use global correction as-is
+	s.mu.Lock()
+	eps := s.Emissivity
+	s.mu.Unlock()
+
+	if eps <= 0 || eps == globalEps {
+		return globalTemp
 	}
-	// Reverse global correction to get raw measured temp
 	raw := globalTemp
 	if globalEps > 0 && globalEps < 1.0 {
 		raw = globalTemp*globalEps + (1-globalEps)*ambientC
 	}
-	// Apply per-spot correction
-	return colorize.CorrectEmissivity(raw, ambientC, s.Emissivity)
+	return colorize.CorrectEmissivity(raw, ambientC, eps)
 }

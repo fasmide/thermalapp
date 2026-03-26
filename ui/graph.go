@@ -105,8 +105,9 @@ func (gw *GraphWindow) layoutGraph(gtx layout.Context) layout.Dimensions {
 			dur := st.Duration.Truncate(time.Second)
 
 			epsLabel := " e: global "
-			if spot.EmissivityIdx >= 0 && spot.EmissivityIdx < len(colorize.EmissivityPresets) {
-				p := colorize.EmissivityPresets[spot.EmissivityIdx]
+			_, spotEpsIdx := spot.GetEmissivity()
+			if spotEpsIdx >= 0 && spotEpsIdx < len(colorize.EmissivityPresets) {
+				p := colorize.EmissivityPresets[spotEpsIdx]
 				epsLabel = fmt.Sprintf(" e: %.2f %s ", p.Emissivity, p.Name)
 			}
 
@@ -116,7 +117,7 @@ func (gw *GraphWindow) layoutGraph(gtx layout.Context) layout.Dimensions {
 
 			lightGray := color.NRGBA{R: 220, G: 220, B: 220, A: 255}
 
-			currentIdx := spot.EmissivityIdx
+			currentIdx := spotEpsIdx
 			if gw.epsClick.Clicked(gtx) {
 				gw.epsDropdown.Toggle(currentIdx)
 			}
@@ -169,13 +170,12 @@ func (gw *GraphWindow) layoutGraph(gtx layout.Context) layout.Dimensions {
 
 	// Emissivity dropdown overlay
 	if gw.epsDropdown.IsOpen() {
-		currentIdx := gw.spot.EmissivityIdx
+		_, currentIdx := gw.spot.GetEmissivity()
 		// For per-spot, -1 means "global" — map to preset list idx
 		displayIdx := currentIdx
 		if sel := gw.epsDropdown.Layout(gtx, gw.theme, displayIdx); sel >= 0 {
-			gw.spot.EmissivityIdx = sel
 			preset := colorize.EmissivityPresets[sel]
-			gw.spot.Emissivity = preset.Emissivity
+			gw.spot.SetEmissivity(preset.Emissivity, sel)
 		}
 	}
 

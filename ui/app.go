@@ -134,13 +134,12 @@ func (a *App) UpdateFrame(frame *camera.Frame) {
 	minSpot := a.spots[0]
 	newMinX, newMinY := float32(result.MinX), float32(result.MinY)
 	if !a.smInited {
-		minSpot.X, minSpot.Y = newMinX, newMinY
+		minSpot.SetPosition(newMinX, newMinY, true)
 	} else {
-		minSpot.X += alpha * (newMinX - minSpot.X)
-		minSpot.Y += alpha * (newMinY - minSpot.Y)
+		minSpot.UpdateEMA(newMinX, newMinY, alpha)
 	}
-	minSpot.Active = true
-	minIdx := int(minSpot.Y)*imgW + int(minSpot.X)
+	mx, my := minSpot.GetPosition()
+	minIdx := int(my)*imgW + int(mx)
 	if minIdx >= 0 && minIdx < len(result.Celsius) {
 		minSpot.Record(result.Celsius[minIdx])
 	}
@@ -149,13 +148,12 @@ func (a *App) UpdateFrame(frame *camera.Frame) {
 	maxSpot := a.spots[1]
 	newMaxX, newMaxY := float32(result.MaxX), float32(result.MaxY)
 	if !a.smInited {
-		maxSpot.X, maxSpot.Y = newMaxX, newMaxY
+		maxSpot.SetPosition(newMaxX, newMaxY, true)
 	} else {
-		maxSpot.X += alpha * (newMaxX - maxSpot.X)
-		maxSpot.Y += alpha * (newMaxY - maxSpot.Y)
+		maxSpot.UpdateEMA(newMaxX, newMaxY, alpha)
 	}
-	maxSpot.Active = true
-	maxIdx := int(maxSpot.Y)*imgW + int(maxSpot.X)
+	mxx, mxy := maxSpot.GetPosition()
+	maxIdx := int(mxy)*imgW + int(mxx)
 	if maxIdx >= 0 && maxIdx < len(result.Celsius) {
 		maxSpot.Record(result.Celsius[maxIdx])
 	}
@@ -164,8 +162,9 @@ func (a *App) UpdateFrame(frame *camera.Frame) {
 
 	// Spot 2: cursor — recorded in handlePointer, just read temp here if active
 	cursorSpot := a.spots[2]
-	if cursorSpot.Active {
-		cIdx := int(cursorSpot.Y)*imgW + int(cursorSpot.X)
+	cs := cursorSpot.GetState()
+	if cs.Active {
+		cIdx := int(cs.Y)*imgW + int(cs.X)
 		if cIdx >= 0 && cIdx < len(result.Celsius) {
 			cursorSpot.Record(result.Celsius[cIdx])
 		}
@@ -173,10 +172,12 @@ func (a *App) UpdateFrame(frame *camera.Frame) {
 
 	// User spots (3+)
 	a.mu.Lock()
-	userSpots := a.spots[3:]
+	userSpots := make([]*Spot, len(a.spots[3:]))
+	copy(userSpots, a.spots[3:])
 	a.mu.Unlock()
 	for _, sp := range userSpots {
-		idx := int(sp.Y)*imgW + int(sp.X)
+		st := sp.GetState()
+		idx := int(st.Y)*imgW + int(st.X)
 		if idx >= 0 && idx < len(result.Celsius) {
 			temp := sp.CorrectedTemp(result.Celsius[idx], result.GlobalEmissivity, result.AmbientC)
 			sp.Record(temp)
@@ -315,23 +316,24 @@ func (a *App) handleKeys(gtx layout.Context) {
 			a.mu.Lock()
 			if a.selectedSpot >= 0 && a.selectedSpot < len(a.spots) {
 				sp := a.spots[a.selectedSpot]
+				_, curIdx := sp.GetEmissivity()
 				if backward {
-					sp.EmissivityIdx--
-					if sp.EmissivityIdx < -1 {
-						sp.EmissivityIdx = nPresets - 1
+					curIdx--
+					if curIdx < -1 {
+						curIdx = nPresets - 1
 					}
 				} else {
-					sp.EmissivityIdx++
-					if sp.EmissivityIdx >= nPresets {
-						sp.EmissivityIdx = -1
+					curIdx++
+					if curIdx >= nPresets {
+						curIdx = -1
 					}
 				}
-				if sp.EmissivityIdx == -1 {
-					sp.Emissivity = 0
+				if curIdx == -1 {
+					sp.SetEmissivity(0, -1)
 					a.toastMsg = fmt.Sprintf("Spot %d: ε = global", a.selectedSpot)
 				} else {
-					preset := colorize.EmissivityPresets[sp.EmissivityIdx]
-					sp.Emissivity = preset.Emissivity
+					preset := colorize.EmissivityPresets[curIdx]
+					sp.SetEmissivity(preset.Emissivity, curIdx)
 					a.toastMsg = fmt.Sprintf("Spot %d: ε = %.2f  %s", a.selectedSpot, preset.Emissivity, preset.Name)
 				}
 			} else {
@@ -409,11 +411,9 @@ func (a *App) handlePointer(gtx layout.Context) {
 
 			cursorSpot := a.spots[2]
 			if r != nil && imgX >= 0 && imgY >= 0 && imgX < r.RGBA.Bounds().Dx() && imgY < r.RGBA.Bounds().Dy() {
-				cursorSpot.X = float32(imgX)
-				cursorSpot.Y = float32(imgY)
-				cursorSpot.Active = true
+				cursorSpot.SetPosition(float32(imgX), float32(imgY), true)
 			} else {
-				cursorSpot.Active = false
+				cursorSpot.SetActive(false)
 			}
 		case pointer.Press:
 			// Map screen to image coords
@@ -430,9 +430,9 @@ func (a *App) handlePointer(gtx layout.Context) {
 					a.mu.Lock()
 					found := -1
 					for i := 3; i < len(a.spots); i++ {
-						sp := a.spots[i]
-						dx := int(sp.X) - imgX
-						dy := int(sp.Y) - imgY
+						spX, spY := a.spots[i].GetPosition()
+						dx := int(spX) - imgX
+						dy := int(spY) - imgY
 						if dx*dx+dy*dy < 25 {
 							found = i
 							break
@@ -451,9 +451,9 @@ func (a *App) handlePointer(gtx layout.Context) {
 					removed := false
 					a.mu.Lock()
 					for i := 3; i < len(a.spots); i++ {
-						sp := a.spots[i]
-						dx := int(sp.X) - imgX
-						dy := int(sp.Y) - imgY
+						spX, spY := a.spots[i].GetPosition()
+						dx := int(spX) - imgX
+						dy := int(spY) - imgY
 						if dx*dx+dy*dy < 25 {
 							// Deselect if this was the selected spot
 							if a.selectedSpot == i {
@@ -490,9 +490,7 @@ func (a *App) handlePointer(gtx layout.Context) {
 					if !removed {
 						idx := len(a.spots)
 						sp := NewSpot(idx, SpotUser, color.NRGBA{R: 60, G: 220, B: 60, A: 230})
-						sp.X = float32(imgX)
-						sp.Y = float32(imgY)
-						sp.Active = true
+						sp.SetPosition(float32(imgX), float32(imgY), true)
 						a.spots = append(a.spots, sp)
 					}
 					a.mu.Unlock()
@@ -500,7 +498,7 @@ func (a *App) handlePointer(gtx layout.Context) {
 			}
 
 		case pointer.Leave:
-			a.spots[2].Active = false
+			a.spots[2].SetActive(false)
 		}
 	}
 }
@@ -631,20 +629,29 @@ func (a *App) layoutImage(gtx layout.Context, result *colorize.Result) layout.Di
 	selIdx := a.selectedSpot
 	a.mu.Unlock()
 
-	for _, sp := range allSpots {
-		if !sp.Active {
+	// Take a snapshot of each spot's mutable state (thread-safe)
+	type spotSnap struct {
+		sp    *Spot
+		state SpotState
+	}
+	snaps := make([]spotSnap, len(allSpots))
+	for i, sp := range allSpots {
+		snaps[i] = spotSnap{sp: sp, state: sp.GetState()}
+	}
+
+	for _, sn := range snaps {
+		if !sn.state.Active {
 			continue
 		}
-		// Skip cursor for marker drawing (it gets a label at cursor position)
-		if sp.Kind == SpotCursor {
+		if sn.sp.Kind == SpotCursor {
 			continue
 		}
 
-		cx := offsetX + int(sp.X*scale+scale/2)
-		cy := offsetY + int(sp.Y*scale+scale/2)
+		cx := offsetX + int(sn.state.X*scale+scale/2)
+		cy := offsetY + int(sn.state.Y*scale+scale/2)
 
 		// Selection highlight: larger yellow ring
-		if sp.Index == selIdx {
+		if sn.sp.Index == selIdx {
 			ringSize := markerSize + 3
 			s := clip.Rect{Min: image.Pt(cx-ringSize, cy-ringSize), Max: image.Pt(cx+ringSize, cy+ringSize)}.Push(gtx.Ops)
 			paint.Fill(gtx.Ops, color.NRGBA{R: 255, G: 220, B: 0, A: 255})
@@ -655,34 +662,35 @@ func (a *App) layoutImage(gtx layout.Context, result *colorize.Result) layout.Di
 		my := cy - markerSize
 		sz := markerSize * 2
 		s := clip.Rect{Min: image.Pt(mx, my), Max: image.Pt(mx+sz, my+sz)}.Push(gtx.Ops)
-		paint.Fill(gtx.Ops, sp.Color)
+		paint.Fill(gtx.Ops, sn.sp.Color)
 		s.Pop()
 	}
 
 	// Temperature labels
 	if a.showLabels {
 		imgW := result.RGBA.Bounds().Dx()
-		for _, sp := range allSpots {
-			if !sp.Active || sp.Kind == SpotCursor {
+		for _, sn := range snaps {
+			if !sn.state.Active || sn.sp.Kind == SpotCursor {
 				continue
 			}
-			idx := int(sp.Y)*imgW + int(sp.X)
+			idx := int(sn.state.Y)*imgW + int(sn.state.X)
 			if idx >= 0 && idx < len(result.Celsius) {
-				lx := offsetX + int(sp.X*scale+scale/2)
-				ly := offsetY + int(sp.Y*scale) - 2
-				temp := sp.CorrectedTemp(result.Celsius[idx], result.GlobalEmissivity, result.AmbientC)
+				lx := offsetX + int(sn.state.X*scale+scale/2)
+				ly := offsetY + int(sn.state.Y*scale) - 2
+				temp := sn.sp.CorrectedTemp(result.Celsius[idx], result.GlobalEmissivity, result.AmbientC)
 				epsSuffix := ""
-				if sp.Emissivity > 0 {
-					epsSuffix = fmt.Sprintf(" ε%.2f", sp.Emissivity)
+				if sn.state.Emissivity > 0 {
+					epsSuffix = fmt.Sprintf(" e%.2f", sn.state.Emissivity)
 				}
-				a.drawSpotLabel(gtx, lx, ly, sp.Index, temp, epsSuffix, sp.Color)
+				a.drawSpotLabel(gtx, lx, ly, sn.sp.Index, temp, epsSuffix, sn.sp.Color)
 			}
 		}
 	}
 
 	// Cursor temperature label (next to mouse pointer)
 	cursorSpot := a.spots[2]
-	if cursorSpot.Active {
+	cursorState := snaps[2].state
+	if cursorState.Active {
 		cx := int(a.cursorPos.X) + 12
 		cy := int(a.cursorPos.Y) - 6
 		a.drawTempLabel(gtx, cx, cy, cursorSpot.LastTemp(), cursorSpot.Color)

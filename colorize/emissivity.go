@@ -88,7 +88,8 @@ const DefaultEmissivity float32 = 1.0
 // Returns corrected temperature in °C.
 //
 // Uses the standard radiometric correction formula:
-//   T_obj = (T_meas - (1 - ε) × T_refl) / ε
+//
+//	T_obj = (T_meas - (1 - ε) × T_refl) / ε
 //
 // This is the linearized approximation valid when ΔT is moderate relative
 // to absolute temperature. For ε close to 1.0, the correction is small.
