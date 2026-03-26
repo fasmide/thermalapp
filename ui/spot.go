@@ -2,6 +2,7 @@ package ui
 
 import (
 	"image/color"
+	"math"
 	"sync"
 	"time"
 )
@@ -105,4 +106,59 @@ func (s *Spot) LastTemp() float32 {
 	}
 	idx := (s.head - 1 + historySize) % historySize
 	return s.hist[idx].Temp
+}
+
+// SpotStats holds computed statistics for a spot's history.
+type SpotStats struct {
+	Count    int
+	Min, Max float32
+	Mean     float32
+	StdDev   float32
+	Current  float32
+	Duration time.Duration // time span of recorded data
+}
+
+// Stats computes statistics over all recorded samples.
+func (s *Spot) Stats() SpotStats {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	st := SpotStats{Count: s.count}
+	if s.count == 0 {
+		return st
+	}
+
+	start := (s.head - s.count + historySize) % historySize
+	st.Min = s.hist[start].Temp
+	st.Max = s.hist[start].Temp
+	st.Current = s.hist[(s.head-1+historySize)%historySize].Temp
+
+	var sum float64
+	for i := 0; i < s.count; i++ {
+		t := s.hist[(start+i)%historySize].Temp
+		if t < st.Min {
+			st.Min = t
+		}
+		if t > st.Max {
+			st.Max = t
+		}
+		sum += float64(t)
+	}
+	st.Mean = float32(sum / float64(s.count))
+
+	// Standard deviation
+	var variance float64
+	for i := 0; i < s.count; i++ {
+		t := float64(s.hist[(start+i)%historySize].Temp)
+		d := t - float64(st.Mean)
+		variance += d * d
+	}
+	st.StdDev = float32(math.Sqrt(variance / float64(s.count)))
+
+	// Duration
+	first := s.hist[start].Time
+	last := s.hist[(s.head-1+historySize)%historySize].Time
+	st.Duration = last.Sub(first)
+
+	return st
 }

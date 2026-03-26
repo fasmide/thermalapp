@@ -6,6 +6,7 @@ import (
 	"image/color"
 	"math"
 	"sync"
+	"time"
 
 	"gioui.org/app"
 	"gioui.org/layout"
@@ -94,8 +95,13 @@ func (gw *GraphWindow) layoutGraph(gtx layout.Context) layout.Dimensions {
 			case SpotUser:
 				kindStr = fmt.Sprintf("Point %d", spot.Index)
 			}
-			title := fmt.Sprintf("Spot %d (%s) — %.1f°C — %d samples",
-				spot.Index, kindStr, spot.LastTemp(), spot.Count())
+
+			st := spot.Stats()
+			dur := st.Duration.Truncate(time.Second)
+			title := fmt.Sprintf("Spot %d (%s)  |  Now: %.1f°C  |  Min: %.1f  Max: %.1f  Mean: %.1f  σ: %.2f  |  %d samples / %s",
+				spot.Index, kindStr, st.Current,
+				st.Min, st.Max, st.Mean, st.StdDev,
+				st.Count, dur)
 
 			return layout.UniformInset(unit.Dp(6)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 				lbl := material.Body2(gw.theme, title)
