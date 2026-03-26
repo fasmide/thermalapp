@@ -31,11 +31,6 @@ import (
 	"thermalapp/colorize"
 )
 
-// fixedPoint is a user-placed measurement point in image pixel coordinates.
-type fixedPoint struct {
-	X, Y int
-}
-
 // App holds the UI and shared state.
 type App struct {
 	Window *app.Window
@@ -46,10 +41,12 @@ type App struct {
 	params colorize.Params
 	cam    camera.Camera
 
-	// Cursor state
-	cursorPos   f32.Point // in image-local coords
-	cursorTemp  float32
-	cursorValid bool
+	// Measurement spots: 0=min, 1=max, 2=cursor, 3+=user
+	spots  []*Spot
+	graphs map[int]*GraphWindow // index -> graph window
+
+	// Cursor screen position (for drawing label next to pointer)
+	cursorPos f32.Point
 
 	// Image layout info (updated each frame for cursor mapping)
 	imgOffsetX, imgOffsetY int
@@ -58,10 +55,8 @@ type App struct {
 	// Gain state
 	gainMode camera.GainMode
 
-	// Smoothed spot marker positions (EMA)
-	smMinX, smMinY float32
-	smMaxX, smMaxY float32
-	smInited       bool
+	// EMA smoothing initialized flag
+	smInited bool
 
 	// Rotation: 0=0°, 1=90°, 2=180°, 3=270°
 	rotation int
@@ -70,9 +65,6 @@ type App struct {
 	showColorbar bool
 	showHelp     bool
 	showLabels   bool
-
-	// User-placed measurement points (image pixel coords)
-	fixedPoints []fixedPoint
 
 	// Toast notification
 	toastMsg    string
@@ -97,6 +89,12 @@ func NewApp(cam camera.Camera) *App {
 			Mode:    colorize.AGCPercentile,
 			Palette: colorize.PaletteInferno,
 		},
+		spots: []*Spot{
+			NewSpot(0, SpotMin, color.NRGBA{R: 60, G: 120, B: 255, A: 230}),
+			NewSpot(1, SpotMax, color.NRGBA{R: 255, G: 60, B: 60, A: 230}),
+			NewSpot(2, SpotCursor, color.NRGBA{R: 180, G: 180, B: 180, A: 200}),
+		},
+		graphs:       make(map[int]*GraphWindow),
 		showColorbar: true,
 		showLabels:   true,
 	}
@@ -113,6 +111,71 @@ func (a *App) UpdateFrame(frame *camera.Frame) {
 	a.mu.Lock()
 	a.result = result
 	a.mu.Unlock()
+
+	imgW := result.RGBA.Bounds().Dx()
+
+	// Update spot positions and record temperatures
+	const alpha = 0.15
+
+	// Spot 0: min
+	minSpot := a.spots[0]
+	newMinX, newMinY := float32(result.MinX), float32(result.MinY)
+	if !a.smInited {
+		minSpot.X, minSpot.Y = newMinX, newMinY
+	} else {
+		minSpot.X += alpha * (newMinX - minSpot.X)
+		minSpot.Y += alpha * (newMinY - minSpot.Y)
+	}
+	minSpot.Active = true
+	minIdx := int(minSpot.Y)*imgW + int(minSpot.X)
+	if minIdx >= 0 && minIdx < len(result.Celsius) {
+		minSpot.Record(result.Celsius[minIdx])
+	}
+
+	// Spot 1: max
+	maxSpot := a.spots[1]
+	newMaxX, newMaxY := float32(result.MaxX), float32(result.MaxY)
+	if !a.smInited {
+		maxSpot.X, maxSpot.Y = newMaxX, newMaxY
+	} else {
+		maxSpot.X += alpha * (newMaxX - maxSpot.X)
+		maxSpot.Y += alpha * (newMaxY - maxSpot.Y)
+	}
+	maxSpot.Active = true
+	maxIdx := int(maxSpot.Y)*imgW + int(maxSpot.X)
+	if maxIdx >= 0 && maxIdx < len(result.Celsius) {
+		maxSpot.Record(result.Celsius[maxIdx])
+	}
+
+	a.smInited = true
+
+	// Spot 2: cursor — recorded in handlePointer, just read temp here if active
+	cursorSpot := a.spots[2]
+	if cursorSpot.Active {
+		cIdx := int(cursorSpot.Y)*imgW + int(cursorSpot.X)
+		if cIdx >= 0 && cIdx < len(result.Celsius) {
+			cursorSpot.Record(result.Celsius[cIdx])
+		}
+	}
+
+	// User spots (3+)
+	a.mu.Lock()
+	userSpots := a.spots[3:]
+	a.mu.Unlock()
+	for _, sp := range userSpots {
+		idx := int(sp.Y)*imgW + int(sp.X)
+		if idx >= 0 && idx < len(result.Celsius) {
+			sp.Record(result.Celsius[idx])
+		}
+	}
+
+	// Invalidate graph windows
+	for _, gw := range a.graphs {
+		if !gw.IsClosed() {
+			gw.Invalidate()
+		}
+	}
+
 	a.Window.Invalidate()
 }
 
@@ -148,6 +211,17 @@ func (a *App) handleKeys(gtx layout.Context) {
 		key.Filter{Name: "R"},
 		key.Filter{Name: "T"},
 		key.Filter{Name: "X"},
+		// Number keys for graph toggle
+		key.Filter{Name: "0"},
+		key.Filter{Name: "1"},
+		key.Filter{Name: "2"},
+		key.Filter{Name: "3"},
+		key.Filter{Name: "4"},
+		key.Filter{Name: "5"},
+		key.Filter{Name: "6"},
+		key.Filter{Name: "7"},
+		key.Filter{Name: "8"},
+		key.Filter{Name: "9"},
 	}
 
 	for {
@@ -215,7 +289,22 @@ func (a *App) handleKeys(gtx layout.Context) {
 			a.showLabels = !a.showLabels
 
 		case "X":
-			a.fixedPoints = nil
+			a.mu.Lock()
+			// Close any graph windows for user spots (index >= 3)
+			for idx, gw := range a.graphs {
+				if idx >= 3 {
+					gw.mu.Lock()
+					gw.window.Perform(system.ActionClose)
+					gw.mu.Unlock()
+					delete(a.graphs, idx)
+				}
+			}
+			a.spots = a.spots[:3] // keep min, max, cursor
+			a.mu.Unlock()
+
+		case "0", "1", "2", "3", "4", "5", "6", "7", "8", "9":
+			idx := int(ke.Name[0] - '0')
+			a.toggleGraph(idx)
 
 		case key.NameSpace:
 			a.mu.Lock()
@@ -258,17 +347,16 @@ func (a *App) handlePointer(gtx layout.Context) {
 			r := a.result
 			a.mu.Unlock()
 
+			cursorSpot := a.spots[2]
 			if r != nil && imgX >= 0 && imgY >= 0 && imgX < r.RGBA.Bounds().Dx() && imgY < r.RGBA.Bounds().Dy() {
-				idx := imgY*r.RGBA.Bounds().Dx() + imgX
-				if idx < len(r.Celsius) {
-					a.cursorTemp = r.Celsius[idx]
-					a.cursorValid = true
-				}
+				cursorSpot.X = float32(imgX)
+				cursorSpot.Y = float32(imgY)
+				cursorSpot.Active = true
 			} else {
-				a.cursorValid = false
+				cursorSpot.Active = false
 			}
 		case pointer.Press:
-			// Add or remove a fixed measurement point
+			// Add or remove a user measurement point
 			imgX := int((pe.Position.X - float32(a.imgOffsetX)) / a.imgScale)
 			imgY := int((pe.Position.Y - float32(a.imgOffsetY)) / a.imgScale)
 
@@ -277,24 +365,53 @@ func (a *App) handlePointer(gtx layout.Context) {
 			a.mu.Unlock()
 
 			if r != nil && imgX >= 0 && imgY >= 0 && imgX < r.RGBA.Bounds().Dx() && imgY < r.RGBA.Bounds().Dy() {
-				// Check if clicking near an existing point (within 5px) to remove it
+				// Check if clicking near an existing user point (within 5px) to remove it
 				removed := false
-				for i, p := range a.fixedPoints {
-					dx := p.X - imgX
-					dy := p.Y - imgY
+				a.mu.Lock()
+				for i := 3; i < len(a.spots); i++ {
+					sp := a.spots[i]
+					dx := int(sp.X) - imgX
+					dy := int(sp.Y) - imgY
 					if dx*dx+dy*dy < 25 {
-						a.fixedPoints = append(a.fixedPoints[:i], a.fixedPoints[i+1:]...)
+						// Close graph window if open
+						if gw, ok := a.graphs[i]; ok {
+							gw.mu.Lock()
+							gw.window.Perform(system.ActionClose)
+							gw.mu.Unlock()
+							delete(a.graphs, i)
+						}
+						a.spots = append(a.spots[:i], a.spots[i+1:]...)
+						// Re-number remaining user spots and fix graph map keys
+						newGraphs := make(map[int]*GraphWindow)
+						for k, v := range a.graphs {
+							if k < 3 {
+								newGraphs[k] = v
+							}
+						}
+						for j := 3; j < len(a.spots); j++ {
+							a.spots[j].Index = j
+							if gw, ok := a.graphs[j+1]; ok {
+								newGraphs[j] = gw
+							}
+						}
+						a.graphs = newGraphs
 						removed = true
 						break
 					}
 				}
 				if !removed {
-					a.fixedPoints = append(a.fixedPoints, fixedPoint{X: imgX, Y: imgY})
+					idx := len(a.spots)
+					sp := NewSpot(idx, SpotUser, color.NRGBA{R: 60, G: 220, B: 60, A: 230})
+					sp.X = float32(imgX)
+					sp.Y = float32(imgY)
+					sp.Active = true
+					a.spots = append(a.spots, sp)
 				}
+				a.mu.Unlock()
 			}
 
 		case pointer.Leave:
-			a.cursorValid = false
+			a.spots[2].Active = false
 		}
 	}
 }
@@ -401,89 +518,104 @@ func (a *App) layoutImage(gtx layout.Context, result *colorize.Result) layout.Di
 		s1.Pop()
 	}
 
-	// Smooth spot marker positions with EMA
-	const alpha = 0.15 // lower = smoother, 0.1-0.2 works well at 25fps
-	newMinX, newMinY := float32(result.MinX), float32(result.MinY)
-	newMaxX, newMaxY := float32(result.MaxX), float32(result.MaxY)
-	if !a.smInited {
-		a.smMinX, a.smMinY = newMinX, newMinY
-		a.smMaxX, a.smMaxY = newMaxX, newMaxY
-		a.smInited = true
-	} else {
-		a.smMinX += alpha * (newMinX - a.smMinX)
-		a.smMinY += alpha * (newMinY - a.smMinY)
-		a.smMaxX += alpha * (newMaxX - a.smMaxX)
-		a.smMaxY += alpha * (newMaxY - a.smMaxY)
-	}
-
-	// Draw spot markers (min=blue, max=red)
+	// Draw spot markers and labels
 	markerSize := 4
-	// Min spot (blue)
-	{
-		mx := offsetX + int(a.smMinX*scale+scale/2) - markerSize
-		my := offsetY + int(a.smMinY*scale+scale/2) - markerSize
+	a.mu.Lock()
+	allSpots := make([]*Spot, len(a.spots))
+	copy(allSpots, a.spots)
+	a.mu.Unlock()
+
+	for _, sp := range allSpots {
+		if !sp.Active {
+			continue
+		}
+		// Skip cursor for marker drawing (it gets a label at cursor position)
+		if sp.Kind == SpotCursor {
+			continue
+		}
+
+		mx := offsetX + int(sp.X*scale+scale/2) - markerSize
+		my := offsetY + int(sp.Y*scale+scale/2) - markerSize
 		sz := markerSize * 2
 		s := clip.Rect{Min: image.Pt(mx, my), Max: image.Pt(mx+sz, my+sz)}.Push(gtx.Ops)
-		paint.Fill(gtx.Ops, color.NRGBA{R: 60, G: 120, B: 255, A: 230})
-		s.Pop()
-	}
-	// Max spot (red)
-	{
-		mx := offsetX + int(a.smMaxX*scale+scale/2) - markerSize
-		my := offsetY + int(a.smMaxY*scale+scale/2) - markerSize
-		sz := markerSize * 2
-		s := clip.Rect{Min: image.Pt(mx, my), Max: image.Pt(mx+sz, my+sz)}.Push(gtx.Ops)
-		paint.Fill(gtx.Ops, color.NRGBA{R: 255, G: 60, B: 60, A: 230})
+		paint.Fill(gtx.Ops, sp.Color)
 		s.Pop()
 	}
 
-	// Draw user-placed fixed points (green)
-	for _, p := range a.fixedPoints {
-		px := offsetX + int(float32(p.X)*scale+scale/2) - markerSize
-		py := offsetY + int(float32(p.Y)*scale+scale/2) - markerSize
-		sz := markerSize * 2
-		s := clip.Rect{Min: image.Pt(px, py), Max: image.Pt(px+sz, py+sz)}.Push(gtx.Ops)
-		paint.Fill(gtx.Ops, color.NRGBA{R: 60, G: 220, B: 60, A: 230})
-		s.Pop()
-	}
-
-	// Temperature labels on markers
+	// Temperature labels
 	if a.showLabels {
 		imgW := result.RGBA.Bounds().Dx()
-
-		// Min label
-		minIdx := int(a.smMinY)*imgW + int(a.smMinX)
-		if minIdx >= 0 && minIdx < len(result.Celsius) {
-			a.drawTempLabel(gtx, offsetX+int(a.smMinX*scale+scale/2), offsetY+int(a.smMinY*scale)-2,
-				result.Celsius[minIdx], color.NRGBA{R: 60, G: 120, B: 255, A: 230})
-		}
-
-		// Max label
-		maxIdx := int(a.smMaxY)*imgW + int(a.smMaxX)
-		if maxIdx >= 0 && maxIdx < len(result.Celsius) {
-			a.drawTempLabel(gtx, offsetX+int(a.smMaxX*scale+scale/2), offsetY+int(a.smMaxY*scale)-2,
-				result.Celsius[maxIdx], color.NRGBA{R: 255, G: 60, B: 60, A: 230})
-		}
-
-		// Fixed point labels
-		for _, p := range a.fixedPoints {
-			idx := p.Y*imgW + p.X
+		for _, sp := range allSpots {
+			if !sp.Active || sp.Kind == SpotCursor {
+				continue
+			}
+			idx := int(sp.Y)*imgW + int(sp.X)
 			if idx >= 0 && idx < len(result.Celsius) {
-				a.drawTempLabel(gtx, offsetX+int(float32(p.X)*scale+scale/2), offsetY+int(float32(p.Y)*scale)-2,
-					result.Celsius[idx], color.NRGBA{R: 60, G: 220, B: 60, A: 230})
+				lx := offsetX + int(sp.X*scale+scale/2)
+				ly := offsetY + int(sp.Y*scale) - 2
+				a.drawSpotLabel(gtx, lx, ly, sp.Index, result.Celsius[idx], sp.Color)
 			}
 		}
 	}
 
 	// Cursor temperature label (next to mouse pointer)
-	if a.cursorValid {
+	cursorSpot := a.spots[2]
+	if cursorSpot.Active {
 		cx := int(a.cursorPos.X) + 12
 		cy := int(a.cursorPos.Y) - 6
-		a.drawTempLabel(gtx, cx, cy,
-			a.cursorTemp, color.NRGBA{R: 180, G: 180, B: 180, A: 200})
+		a.drawTempLabel(gtx, cx, cy, cursorSpot.LastTemp(), cursorSpot.Color)
 	}
 
 	return layout.Dimensions{Size: gtx.Constraints.Max}
+}
+
+// drawSpotLabel draws a temperature label with the spot index prefix.
+func (a *App) drawSpotLabel(gtx layout.Context, sx, sy int, index int, temp float32, col color.NRGBA) {
+	txt := fmt.Sprintf("[%d] %.1f\u00b0", index, temp)
+
+	// Measure
+	macro := op.Record(gtx.Ops)
+	gtx.Constraints.Min = image.Point{}
+	dims := layout.Inset{Left: unit.Dp(3), Right: unit.Dp(3), Top: unit.Dp(1), Bottom: unit.Dp(1)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+		lbl := material.Caption(a.theme, txt)
+		lbl.Color = color.NRGBA{R: 255, G: 255, B: 255, A: 255}
+		return lbl.Layout(gtx)
+	})
+	call := macro.Stop()
+
+	ox := sx - dims.Size.X/2
+	oy := sy - dims.Size.Y
+	s := op.Offset(image.Pt(ox, oy)).Push(gtx.Ops)
+
+	pill := clip.Rect{Max: dims.Size}.Push(gtx.Ops)
+	paint.Fill(gtx.Ops, col)
+	pill.Pop()
+
+	call.Add(gtx.Ops)
+	s.Pop()
+}
+
+// toggleGraph opens or closes a graph window for the spot at the given index.
+func (a *App) toggleGraph(idx int) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if idx >= len(a.spots) {
+		return
+	}
+
+	if gw, ok := a.graphs[idx]; ok && !gw.IsClosed() {
+		// Close it by performing close action
+		gw.mu.Lock()
+		gw.window.Perform(system.ActionClose)
+		gw.mu.Unlock()
+		delete(a.graphs, idx)
+		return
+	}
+
+	// Open new graph window
+	gw := NewGraphWindow(a.spots[idx])
+	a.graphs[idx] = gw
 }
 
 // drawTempLabel draws a temperature reading with a small background tag at the given screen position.
@@ -615,8 +747,9 @@ func (a *App) layoutHelp(gtx layout.Context) {
 		{"R", "Rotate 90\u00b0"},
 		{"T", "Toggle temp labels"},
 		{"V", "Toggle colorbar"},
-		{"X", "Clear fixed points"},
+		{"X", "Clear user points"},
 		{"Click", "Place/remove point"},
+		{"0-9", "Toggle graph for spot"},
 		{"Space", "Save screenshot (PNG)"},
 		{"H", "Toggle this help"},
 	}
