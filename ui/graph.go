@@ -16,6 +16,8 @@ import (
 	"gioui.org/text"
 	"gioui.org/unit"
 	"gioui.org/widget/material"
+
+	"thermalapp/colorize"
 )
 
 // GraphWindow manages a separate window displaying a temperature graph for a Spot.
@@ -98,8 +100,15 @@ func (gw *GraphWindow) layoutGraph(gtx layout.Context) layout.Dimensions {
 
 			st := spot.Stats()
 			dur := st.Duration.Truncate(time.Second)
-			title := fmt.Sprintf("Spot %d (%s)  |  Now: %.1f°C  |  Min: %.1f  Max: %.1f  Mean: %.1f  σ: %.2f  |  %d samples / %s",
-				spot.Index, kindStr, st.Current,
+
+			epsStr := "global"
+			if spot.EmissivityIdx >= 0 && spot.EmissivityIdx < len(colorize.EmissivityPresets) {
+				p := colorize.EmissivityPresets[spot.EmissivityIdx]
+				epsStr = fmt.Sprintf("%.2f %s", p.Emissivity, p.Name)
+			}
+
+			title := fmt.Sprintf("Spot %d (%s)  |  ε: %s  |  Now: %.1f°C  |  Min: %.1f  Max: %.1f  Mean: %.1f  σ: %.2f  |  %d samples / %s",
+				spot.Index, kindStr, epsStr, st.Current,
 				st.Min, st.Max, st.Mean, st.StdDev,
 				st.Count, dur)
 

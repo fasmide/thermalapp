@@ -61,6 +61,12 @@ type App struct {
 	// Rotation: 0=0°, 1=90°, 2=180°, 3=270°
 	rotation int
 
+	// Emissivity preset index (into colorize.EmissivityPresets)
+	emissivityIdx int
+
+	// Selected spot index for per-spot emissivity (-1 = none)
+	selectedSpot int
+
 	// Toggles
 	showColorbar bool
 	showHelp     bool
@@ -86,8 +92,9 @@ func NewApp(cam camera.Camera) *App {
 		theme:  material.NewTheme(),
 		cam:    cam,
 		params: colorize.Params{
-			Mode:    colorize.AGCPercentile,
-			Palette: colorize.PaletteInferno,
+			Mode:       colorize.AGCPercentile,
+			Palette:    colorize.PaletteInferno,
+			Emissivity: colorize.DefaultEmissivity,
 		},
 		spots: []*Spot{
 			NewSpot(0, SpotMin, color.NRGBA{R: 60, G: 120, B: 255, A: 230}),
@@ -95,6 +102,7 @@ func NewApp(cam camera.Camera) *App {
 			NewSpot(2, SpotCursor, color.NRGBA{R: 180, G: 180, B: 180, A: 200}),
 		},
 		graphs:       make(map[int]*GraphWindow),
+		selectedSpot: -1,
 		showColorbar: true,
 		showLabels:   true,
 	}
@@ -165,7 +173,8 @@ func (a *App) UpdateFrame(frame *camera.Frame) {
 	for _, sp := range userSpots {
 		idx := int(sp.Y)*imgW + int(sp.X)
 		if idx >= 0 && idx < len(result.Celsius) {
-			sp.Record(result.Celsius[idx])
+			temp := sp.CorrectedTemp(result.Celsius[idx], result.GlobalEmissivity, result.AmbientC)
+			sp.Record(temp)
 		}
 	}
 
@@ -210,6 +219,7 @@ func (a *App) handleKeys(gtx layout.Context) {
 		key.Filter{Name: key.NameSpace},
 		key.Filter{Name: "R"},
 		key.Filter{Name: "T"},
+		key.Filter{Name: "E", Optional: key.ModShift},
 		key.Filter{Name: "X"},
 		// Number keys for graph toggle
 		key.Filter{Name: "0"},
@@ -236,7 +246,11 @@ func (a *App) handleKeys(gtx layout.Context) {
 
 		switch ke.Name {
 		case "Q", key.NameEscape:
-			a.Window.Perform(system.ActionClose)
+			if ke.Name == key.NameEscape && a.selectedSpot >= 0 {
+				a.selectedSpot = -1
+			} else {
+				a.Window.Perform(system.ActionClose)
+			}
 
 		case "C":
 			a.mu.Lock()
@@ -288,6 +302,44 @@ func (a *App) handleKeys(gtx layout.Context) {
 		case "T":
 			a.showLabels = !a.showLabels
 
+		case "E":
+			backward := ke.Modifiers.Contain(key.ModShift)
+			nPresets := len(colorize.EmissivityPresets)
+			a.mu.Lock()
+			if a.selectedSpot >= 0 && a.selectedSpot < len(a.spots) {
+				sp := a.spots[a.selectedSpot]
+				if backward {
+					sp.EmissivityIdx--
+					if sp.EmissivityIdx < -1 {
+						sp.EmissivityIdx = nPresets - 1
+					}
+				} else {
+					sp.EmissivityIdx++
+					if sp.EmissivityIdx >= nPresets {
+						sp.EmissivityIdx = -1
+					}
+				}
+				if sp.EmissivityIdx == -1 {
+					sp.Emissivity = 0
+					a.toastMsg = fmt.Sprintf("Spot %d: ε = global", a.selectedSpot)
+				} else {
+					preset := colorize.EmissivityPresets[sp.EmissivityIdx]
+					sp.Emissivity = preset.Emissivity
+					a.toastMsg = fmt.Sprintf("Spot %d: ε = %.2f  %s", a.selectedSpot, preset.Emissivity, preset.Name)
+				}
+			} else {
+				if backward {
+					a.emissivityIdx = (a.emissivityIdx - 1 + nPresets) % nPresets
+				} else {
+					a.emissivityIdx = (a.emissivityIdx + 1) % nPresets
+				}
+				preset := colorize.EmissivityPresets[a.emissivityIdx]
+				a.params.Emissivity = preset.Emissivity
+				a.toastMsg = fmt.Sprintf("ε = %.2f  %s", preset.Emissivity, preset.Name)
+			}
+			a.toastExpiry = time.Now().Add(2 * time.Second)
+			a.mu.Unlock()
+
 		case "X":
 			a.mu.Lock()
 			// Close any graph windows for user spots (index >= 3)
@@ -300,6 +352,7 @@ func (a *App) handleKeys(gtx layout.Context) {
 				}
 			}
 			a.spots = a.spots[:3] // keep min, max, cursor
+			a.selectedSpot = -1
 			a.mu.Unlock()
 
 		case "0", "1", "2", "3", "4", "5", "6", "7", "8", "9":
@@ -356,7 +409,7 @@ func (a *App) handlePointer(gtx layout.Context) {
 				cursorSpot.Active = false
 			}
 		case pointer.Press:
-			// Add or remove a user measurement point
+			// Map screen to image coords
 			imgX := int((pe.Position.X - float32(a.imgOffsetX)) / a.imgScale)
 			imgY := int((pe.Position.Y - float32(a.imgOffsetY)) / a.imgScale)
 
@@ -365,49 +418,78 @@ func (a *App) handlePointer(gtx layout.Context) {
 			a.mu.Unlock()
 
 			if r != nil && imgX >= 0 && imgY >= 0 && imgX < r.RGBA.Bounds().Dx() && imgY < r.RGBA.Bounds().Dy() {
-				// Check if clicking near an existing user point (within 5px) to remove it
-				removed := false
-				a.mu.Lock()
-				for i := 3; i < len(a.spots); i++ {
-					sp := a.spots[i]
-					dx := int(sp.X) - imgX
-					dy := int(sp.Y) - imgY
-					if dx*dx+dy*dy < 25 {
-						// Close graph window if open
-						if gw, ok := a.graphs[i]; ok {
-							gw.mu.Lock()
-							gw.window.Perform(system.ActionClose)
-							gw.mu.Unlock()
-							delete(a.graphs, i)
+				// Shift+Click: select/deselect a spot for per-spot emissivity
+				if pe.Modifiers.Contain(key.ModShift) {
+					a.mu.Lock()
+					found := -1
+					for i := 3; i < len(a.spots); i++ {
+						sp := a.spots[i]
+						dx := int(sp.X) - imgX
+						dy := int(sp.Y) - imgY
+						if dx*dx+dy*dy < 25 {
+							found = i
+							break
 						}
-						a.spots = append(a.spots[:i], a.spots[i+1:]...)
-						// Re-number remaining user spots and fix graph map keys
-						newGraphs := make(map[int]*GraphWindow)
-						for k, v := range a.graphs {
-							if k < 3 {
-								newGraphs[k] = v
-							}
-						}
-						for j := 3; j < len(a.spots); j++ {
-							a.spots[j].Index = j
-							if gw, ok := a.graphs[j+1]; ok {
-								newGraphs[j] = gw
-							}
-						}
-						a.graphs = newGraphs
-						removed = true
-						break
 					}
+					if found >= 0 {
+						if a.selectedSpot == found {
+							a.selectedSpot = -1 // deselect
+						} else {
+							a.selectedSpot = found
+						}
+					}
+					a.mu.Unlock()
+				} else {
+					// Normal click: add or remove a user measurement point
+					removed := false
+					a.mu.Lock()
+					for i := 3; i < len(a.spots); i++ {
+						sp := a.spots[i]
+						dx := int(sp.X) - imgX
+						dy := int(sp.Y) - imgY
+						if dx*dx+dy*dy < 25 {
+							// Deselect if this was the selected spot
+							if a.selectedSpot == i {
+								a.selectedSpot = -1
+							} else if a.selectedSpot > i {
+								a.selectedSpot--
+							}
+							// Close graph window if open
+							if gw, ok := a.graphs[i]; ok {
+								gw.mu.Lock()
+								gw.window.Perform(system.ActionClose)
+								gw.mu.Unlock()
+								delete(a.graphs, i)
+							}
+							a.spots = append(a.spots[:i], a.spots[i+1:]...)
+							// Re-number remaining user spots and fix graph map keys
+							newGraphs := make(map[int]*GraphWindow)
+							for k, v := range a.graphs {
+								if k < 3 {
+									newGraphs[k] = v
+								}
+							}
+							for j := 3; j < len(a.spots); j++ {
+								a.spots[j].Index = j
+								if gw, ok := a.graphs[j+1]; ok {
+									newGraphs[j] = gw
+								}
+							}
+							a.graphs = newGraphs
+							removed = true
+							break
+						}
+					}
+					if !removed {
+						idx := len(a.spots)
+						sp := NewSpot(idx, SpotUser, color.NRGBA{R: 60, G: 220, B: 60, A: 230})
+						sp.X = float32(imgX)
+						sp.Y = float32(imgY)
+						sp.Active = true
+						a.spots = append(a.spots, sp)
+					}
+					a.mu.Unlock()
 				}
-				if !removed {
-					idx := len(a.spots)
-					sp := NewSpot(idx, SpotUser, color.NRGBA{R: 60, G: 220, B: 60, A: 230})
-					sp.X = float32(imgX)
-					sp.Y = float32(imgY)
-					sp.Active = true
-					a.spots = append(a.spots, sp)
-				}
-				a.mu.Unlock()
 			}
 
 		case pointer.Leave:
@@ -523,6 +605,7 @@ func (a *App) layoutImage(gtx layout.Context, result *colorize.Result) layout.Di
 	a.mu.Lock()
 	allSpots := make([]*Spot, len(a.spots))
 	copy(allSpots, a.spots)
+	selIdx := a.selectedSpot
 	a.mu.Unlock()
 
 	for _, sp := range allSpots {
@@ -534,8 +617,19 @@ func (a *App) layoutImage(gtx layout.Context, result *colorize.Result) layout.Di
 			continue
 		}
 
-		mx := offsetX + int(sp.X*scale+scale/2) - markerSize
-		my := offsetY + int(sp.Y*scale+scale/2) - markerSize
+		cx := offsetX + int(sp.X*scale+scale/2)
+		cy := offsetY + int(sp.Y*scale+scale/2)
+
+		// Selection highlight: larger yellow ring
+		if sp.Index == selIdx {
+			ringSize := markerSize + 3
+			s := clip.Rect{Min: image.Pt(cx-ringSize, cy-ringSize), Max: image.Pt(cx+ringSize, cy+ringSize)}.Push(gtx.Ops)
+			paint.Fill(gtx.Ops, color.NRGBA{R: 255, G: 220, B: 0, A: 255})
+			s.Pop()
+		}
+
+		mx := cx - markerSize
+		my := cy - markerSize
 		sz := markerSize * 2
 		s := clip.Rect{Min: image.Pt(mx, my), Max: image.Pt(mx+sz, my+sz)}.Push(gtx.Ops)
 		paint.Fill(gtx.Ops, sp.Color)
@@ -553,7 +647,12 @@ func (a *App) layoutImage(gtx layout.Context, result *colorize.Result) layout.Di
 			if idx >= 0 && idx < len(result.Celsius) {
 				lx := offsetX + int(sp.X*scale+scale/2)
 				ly := offsetY + int(sp.Y*scale) - 2
-				a.drawSpotLabel(gtx, lx, ly, sp.Index, result.Celsius[idx], sp.Color)
+				temp := sp.CorrectedTemp(result.Celsius[idx], result.GlobalEmissivity, result.AmbientC)
+				epsSuffix := ""
+				if sp.Emissivity > 0 {
+					epsSuffix = fmt.Sprintf(" ε%.2f", sp.Emissivity)
+				}
+				a.drawSpotLabel(gtx, lx, ly, sp.Index, temp, epsSuffix, sp.Color)
 			}
 		}
 	}
@@ -570,8 +669,8 @@ func (a *App) layoutImage(gtx layout.Context, result *colorize.Result) layout.Di
 }
 
 // drawSpotLabel draws a temperature label with the spot index prefix.
-func (a *App) drawSpotLabel(gtx layout.Context, sx, sy int, index int, temp float32, col color.NRGBA) {
-	txt := fmt.Sprintf("[%d] %.1f\u00b0", index, temp)
+func (a *App) drawSpotLabel(gtx layout.Context, sx, sy int, index int, temp float32, suffix string, col color.NRGBA) {
+	txt := fmt.Sprintf("[%d] %.1f\u00b0%s", index, temp, suffix)
 
 	// Measure
 	macro := op.Record(gtx.Ops)
@@ -708,6 +807,7 @@ func (a *App) layoutColorbar(gtx layout.Context, result *colorize.Result) layout
 func (a *App) layoutStatus(gtx layout.Context, result *colorize.Result) layout.Dimensions {
 	a.mu.Lock()
 	p := a.params
+	eIdx := a.emissivityIdx
 	a.mu.Unlock()
 
 	gainStr := "High"
@@ -715,8 +815,11 @@ func (a *App) layoutStatus(gtx layout.Context, result *colorize.Result) layout.D
 		gainStr = "Low"
 	}
 
-	status := fmt.Sprintf("[C] %-10s  |  [A] %-10s  |  [G] Gain: %-4s  |  [R] %d\u00b0  |  [T] Labels  |  [H] Help",
-		p.Palette, agcName(p.Mode), gainStr, a.rotation*90)
+	preset := colorize.EmissivityPresets[eIdx]
+	epsStr := fmt.Sprintf("%.2f %s", preset.Emissivity, preset.Name)
+
+	status := fmt.Sprintf("[C] %-10s  |  [A] %-10s  |  [G] Gain: %-4s  |  [E] ε: %s  |  [R] %d\u00b0  |  [T] Labels  |  [H] Help",
+		p.Palette, agcName(p.Mode), gainStr, epsStr, a.rotation*90)
 
 	return layout.Background{}.Layout(gtx,
 		func(gtx layout.Context) layout.Dimensions {
@@ -746,9 +849,11 @@ func (a *App) layoutHelp(gtx layout.Context) {
 		{"S", "Trigger shutter/NUC"},
 		{"R", "Rotate 90\u00b0"},
 		{"T", "Toggle temp labels"},
+		{"E / Shift+E", "Cycle emissivity \u2192 / \u2190"},
 		{"V", "Toggle colorbar"},
 		{"X", "Clear user points"},
 		{"Click", "Place/remove point"},
+		{"Shift+Click", "Select spot (for E)"},
 		{"0-9", "Toggle graph for spot"},
 		{"Space", "Save screenshot (PNG)"},
 		{"H", "Toggle this help"},

@@ -54,6 +54,9 @@ type Params struct {
 	// FixedMin/FixedMax are used when Mode == AGCFixed (in °C).
 	FixedMin float32
 	FixedMax float32
+	// Emissivity for global surface correction (0 < ε ≤ 1).
+	// Default 1.0 means no correction (blackbody assumption).
+	Emissivity float32
 }
 
 // Result holds the colorized output and statistics.
@@ -65,7 +68,12 @@ type Result struct {
 	MaxX, MaxY int     // pixel position of max temp
 	Width      int
 	// Celsius holds per-pixel temps for cursor lookup (same layout as frame).
+	// These are already corrected for the global emissivity.
 	Celsius []float32
+	// AmbientC is the estimated reflected/ambient temp used for emissivity correction.
+	AmbientC float32
+	// GlobalEmissivity is the emissivity applied to Celsius values.
+	GlobalEmissivity float32
 }
 
 // Colorize converts a camera Frame into a colorized RGBA image.
@@ -92,6 +100,16 @@ func Colorize(frame *camera.Frame, params Params) *Result {
 		for i, raw := range frame.Thermal {
 			result.Celsius[i] = camera.ToCelsius(raw)
 		}
+		// Apply global emissivity correction
+		eps := params.Emissivity
+		if eps > 0 && eps < 1.0 {
+			tRefl := EstimateAmbient(result.Celsius)
+			result.AmbientC = tRefl
+			for i := range result.Celsius {
+				result.Celsius[i] = CorrectEmissivity(result.Celsius[i], tRefl, eps)
+			}
+		}
+		result.GlobalEmissivity = eps
 		if len(result.Celsius) > 0 {
 			result.MinC = result.Celsius[0]
 			result.MaxC = result.Celsius[0]
@@ -117,6 +135,17 @@ func Colorize(frame *camera.Frame, params Params) *Result {
 	for i, raw := range frame.Thermal {
 		celsius[i] = camera.ToCelsius(raw)
 	}
+
+	// Apply global emissivity correction
+	eps := params.Emissivity
+	if eps > 0 && eps < 1.0 {
+		tRefl := EstimateAmbient(celsius)
+		result.AmbientC = tRefl
+		for i := range celsius {
+			celsius[i] = CorrectEmissivity(celsius[i], tRefl, eps)
+		}
+	}
+	result.GlobalEmissivity = eps
 	result.Celsius = celsius
 
 	// Find min/max

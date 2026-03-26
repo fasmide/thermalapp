@@ -5,6 +5,8 @@ import (
 	"math"
 	"sync"
 	"time"
+
+	"thermalapp/colorize"
 )
 
 const historySize = 10000
@@ -38,6 +40,10 @@ type Spot struct {
 	// Whether this spot currently has a valid reading
 	Active bool
 
+	// Per-spot emissivity override. 0 means "use global" (no override).
+	Emissivity    float32
+	EmissivityIdx int // index into colorize.EmissivityPresets, -1 = use global
+
 	// Ring buffer of temperature history
 	hist    [historySize]Sample
 	head    int // next write position
@@ -48,9 +54,10 @@ type Spot struct {
 // NewSpot creates a spot with the given index, kind and color.
 func NewSpot(index int, kind SpotKind, col color.NRGBA) *Spot {
 	return &Spot{
-		Index: index,
-		Kind:  kind,
-		Color: col,
+		Index:         index,
+		Kind:          kind,
+		Color:         col,
+		EmissivityIdx: -1, // use global
 	}
 }
 
@@ -161,4 +168,21 @@ func (s *Spot) Stats() SpotStats {
 	st.Duration = last.Sub(first)
 
 	return st
+}
+
+// CorrectedTemp returns the temperature at this spot, applying per-spot
+// emissivity correction if Emissivity > 0. The globalTemp is the celsius
+// value already corrected for the global emissivity. globalEps and ambientC
+// are from the colorize Result.
+func (s *Spot) CorrectedTemp(globalTemp, globalEps, ambientC float32) float32 {
+	if s.Emissivity <= 0 || s.Emissivity == globalEps {
+		return globalTemp // use global correction as-is
+	}
+	// Reverse global correction to get raw measured temp
+	raw := globalTemp
+	if globalEps > 0 && globalEps < 1.0 {
+		raw = globalTemp*globalEps + (1-globalEps)*ambientC
+	}
+	// Apply per-spot correction
+	return colorize.CorrectEmissivity(raw, ambientC, s.Emissivity)
 }
