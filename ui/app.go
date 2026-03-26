@@ -98,6 +98,7 @@ func NewApp(cam camera.Camera) *App {
 			Palette: colorize.PaletteInferno,
 		},
 		showColorbar: true,
+		showLabels:   true,
 	}
 }
 
@@ -472,16 +473,14 @@ func (a *App) layoutImage(gtx layout.Context, result *colorize.Result) layout.Di
 					result.Celsius[idx], color.NRGBA{R: 60, G: 220, B: 60, A: 230})
 			}
 		}
-	} else {
-		// Even without labels, show temps on fixed points
-		imgW := result.RGBA.Bounds().Dx()
-		for _, p := range a.fixedPoints {
-			idx := p.Y*imgW + p.X
-			if idx >= 0 && idx < len(result.Celsius) {
-				a.drawTempLabel(gtx, offsetX+int(float32(p.X)*scale+scale/2), offsetY+int(float32(p.Y)*scale)-2,
-					result.Celsius[idx], color.NRGBA{R: 60, G: 220, B: 60, A: 230})
-			}
-		}
+	}
+
+	// Cursor temperature label (next to mouse pointer)
+	if a.cursorValid {
+		cx := int(a.cursorPos.X) + 12
+		cy := int(a.cursorPos.Y) - 6
+		a.drawTempLabel(gtx, cx, cy,
+			a.cursorTemp, color.NRGBA{R: 180, G: 180, B: 180, A: 200})
 	}
 
 	return layout.Dimensions{Size: gtx.Constraints.Max}
@@ -579,18 +578,13 @@ func (a *App) layoutStatus(gtx layout.Context, result *colorize.Result) layout.D
 	p := a.params
 	a.mu.Unlock()
 
-	cursor := ""
-	if a.cursorValid {
-		cursor = fmt.Sprintf("  Cursor: %.1f\u00b0C", a.cursorTemp)
-	}
-
 	gainStr := "High"
 	if a.gainMode == camera.GainLow {
 		gainStr = "Low"
 	}
 
-	status := fmt.Sprintf("[C] %-10s  |  [A] %-10s  |  [G] Gain: %-4s  |  [R] %d\u00b0  |  [T] Labels%s  |  [H] Help",
-		p.Palette, agcName(p.Mode), gainStr, a.rotation*90, cursor)
+	status := fmt.Sprintf("[C] %-10s  |  [A] %-10s  |  [G] Gain: %-4s  |  [R] %d\u00b0  |  [T] Labels  |  [H] Help",
+		p.Palette, agcName(p.Mode), gainStr, a.rotation*90)
 
 	return layout.Background{}.Layout(gtx,
 		func(gtx layout.Context) layout.Dimensions {
