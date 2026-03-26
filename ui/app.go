@@ -405,17 +405,53 @@ func (a *App) layoutColorbar(gtx layout.Context, result *colorize.Result) layout
 	scaleX := float32(barW) / float32(barImg.Bounds().Dx())
 	scaleY := float32(barH) / float32(barImg.Bounds().Dy())
 
-	defer clip.Rect{Max: image.Pt(barW, barH)}.Push(gtx.Ops).Pop()
+	// Draw the gradient bar
+	{
+		s1 := clip.Rect{Max: image.Pt(barW, barH)}.Push(gtx.Ops)
+		aff := f32.Affine2D{}.Scale(f32.Pt(0, 0), f32.Pt(scaleX, scaleY))
+		s2 := op.Affine(aff).Push(gtx.Ops)
 
-	aff := f32.Affine2D{}.Scale(f32.Pt(0, 0), f32.Pt(scaleX, scaleY))
-	defer op.Affine(aff).Push(gtx.Ops).Pop()
+		imgOp := paint.NewImageOp(barImg)
+		imgOp.Filter = paint.FilterLinear
+		imgOp.Add(gtx.Ops)
+		paint.PaintOp{}.Add(gtx.Ops)
 
-	imgOp := paint.NewImageOp(barImg)
-	imgOp.Filter = paint.FilterLinear
-	imgOp.Add(gtx.Ops)
-	paint.PaintOp{}.Add(gtx.Ops)
+		s2.Pop()
+		s1.Pop()
+	}
 
-	// Draw min/max labels over the colorbar
+	// Pick contrasting text colors based on LUT endpoints
+	lut := a.params.Palette.LUT()
+	minBg := lut[0]
+	maxBg := lut[255]
+	contrastColor := func(bg [3]uint8) color.NRGBA {
+		// Perceived luminance
+		lum := 0.299*float32(bg[0]) + 0.587*float32(bg[1]) + 0.114*float32(bg[2])
+		if lum > 128 {
+			return color.NRGBA{A: 255} // black
+		}
+		return color.NRGBA{R: 255, G: 255, B: 255, A: 255} // white
+	}
+
+	// Min label (left)
+	{
+		s := op.Offset(image.Pt(4, 1)).Push(gtx.Ops)
+		lbl := material.Caption(a.theme, fmt.Sprintf("%.1f\u00b0C", result.MinC))
+		lbl.Color = contrastColor(minBg)
+		lbl.Layout(gtx)
+		s.Pop()
+	}
+
+	// Max label (right)
+	{
+		maxStr := fmt.Sprintf("%.1f\u00b0C", result.MaxC)
+		s := op.Offset(image.Pt(barW-gtx.Dp(unit.Dp(55)), 1)).Push(gtx.Ops)
+		lbl := material.Caption(a.theme, maxStr)
+		lbl.Color = contrastColor(maxBg)
+		lbl.Layout(gtx)
+		s.Pop()
+	}
+
 	return layout.Dimensions{Size: image.Pt(barW, barH)}
 }
 
@@ -434,8 +470,7 @@ func (a *App) layoutStatus(gtx layout.Context, result *colorize.Result) layout.D
 		gainStr = "Low"
 	}
 
-	status := fmt.Sprintf("Min:%7.1f\u00b0C  Max:%7.1f\u00b0C  |  [C] %-10s  |  [A] %-10s  |  [G] Gain: %-4s  |  [R] %d\u00b0%s  |  [H] Help",
-		result.MinC, result.MaxC,
+	status := fmt.Sprintf("[C] %-10s  |  [A] %-10s  |  [G] Gain: %-4s  |  [R] %d\u00b0%s  |  [H] Help",
 		p.Palette, agcName(p.Mode), gainStr, a.rotation*90, cursor)
 
 	return layout.Background{}.Layout(gtx,
