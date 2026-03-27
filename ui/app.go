@@ -29,6 +29,7 @@ import (
 
 	"thermalapp/camera"
 	"thermalapp/colorize"
+	"thermalapp/recording"
 )
 
 // App holds the UI and shared state.
@@ -82,13 +83,26 @@ type App struct {
 
 	// Tag for input events
 	tag bool
+
+	// Recording state
+	lastFrame *camera.Frame   // last raw frame for D-key dump
+	recorder  *recording.Recorder
+
+	// Playback state (non-nil when playing a recording)
+	player *recording.Player
+
+	// Playback bar state
+	playPauseClick widget.Clickable
+	sliderTag      bool // event tag for the slider area
+	sliderDragging bool
 }
 
 func NewApp(cam camera.Camera) *App {
 	size := cam.SensorSize()
 	var w app.Window
+	title := "P3 Thermal"
 	w.Option(
-		app.Title("P3 Thermal"),
+		app.Title(title),
 		app.Size(unit.Dp(float32(size.X*3)), unit.Dp(float32(size.Y*3+80))),
 	)
 	return &App{
@@ -113,11 +127,26 @@ func NewApp(cam camera.Camera) *App {
 	}
 }
 
+// SetPlayer configures the app for playback mode.
+func (a *App) SetPlayer(p *recording.Player) {
+	a.player = p
+	a.Window.Option(app.Title(fmt.Sprintf("P3 Thermal — Playback (%d frames)", p.FrameCount())))
+}
+
 func (a *App) UpdateFrame(frame *camera.Frame) {
 	a.mu.Lock()
 	p := a.params
 	rot := a.rotation
+	a.lastFrame = frame
+	rec := a.recorder
 	a.mu.Unlock()
+
+	// Record frame if recording is active
+	if rec != nil {
+		if err := rec.WriteFrame(frame); err != nil {
+			log.Printf("recording write: %v", err)
+		}
+	}
 
 	result := colorize.Colorize(frame, p).Rotate(rot)
 
@@ -223,10 +252,16 @@ func (a *App) handleKeys(gtx layout.Context) {
 		key.Filter{Name: "H"},
 		key.Filter{Name: "V"},
 		key.Filter{Name: key.NameSpace},
+		key.Filter{Name: key.NameF12},
 		key.Filter{Name: "R"},
 		key.Filter{Name: "T"},
 		key.Filter{Name: "E", Optional: key.ModShift},
 		key.Filter{Name: "X"},
+		key.Filter{Name: "D"},
+		key.Filter{Name: key.NameF5},
+		key.Filter{Name: "P"},
+		key.Filter{Name: key.NameLeftArrow},
+		key.Filter{Name: key.NameRightArrow},
 		// Number keys for graph toggle
 		key.Filter{Name: "0"},
 		key.Filter{Name: "1"},
@@ -368,7 +403,61 @@ func (a *App) handleKeys(gtx layout.Context) {
 			idx := int(ke.Name[0] - '0')
 			a.toggleGraph(idx)
 
+		case "D":
+			a.mu.Lock()
+			frame := a.lastFrame
+			a.mu.Unlock()
+			if frame != nil {
+				go a.dumpFrame(frame)
+			}
+
+		case key.NameF5:
+			a.toggleRecording()
+
+		case "P":
+			if a.player != nil {
+				paused := a.player.IsPaused()
+				a.player.SetPaused(!paused)
+				a.mu.Lock()
+				if !paused {
+					a.toastMsg = "Playback paused"
+				} else {
+					a.toastMsg = "Playback resumed"
+				}
+				a.toastExpiry = time.Now().Add(2 * time.Second)
+				a.mu.Unlock()
+			}
+
+		case key.NameLeftArrow:
+			if a.player != nil {
+				idx := a.player.FrameIndex() - 2
+				if idx < 0 {
+					idx = 0
+				}
+				a.seekToFrame(idx)
+			}
+
+		case key.NameRightArrow:
+			if a.player != nil {
+				idx := a.player.FrameIndex()
+				a.seekToFrame(idx)
+			}
+
 		case key.NameSpace:
+			if a.player != nil {
+				paused := a.player.IsPaused()
+				a.player.SetPaused(!paused)
+				a.mu.Lock()
+				if !paused {
+					a.toastMsg = "Playback paused"
+				} else {
+					a.toastMsg = "Playback resumed"
+				}
+				a.toastExpiry = time.Now().Add(2 * time.Second)
+				a.mu.Unlock()
+			}
+
+		case key.NameF12:
 			a.mu.Lock()
 			r := a.result
 			a.mu.Unlock()
@@ -523,6 +612,13 @@ func (a *App) doLayout(gtx layout.Context) layout.Dimensions {
 	if a.showColorbar {
 		children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 			return a.layoutColorbar(gtx, result)
+		}))
+	}
+
+	// Playback bar (only in playback mode)
+	if a.player != nil {
+		children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return a.layoutPlaybackBar(gtx)
 		}))
 	}
 
@@ -835,6 +931,208 @@ func (a *App) layoutColorbar(gtx layout.Context, result *colorize.Result) layout
 	return layout.Dimensions{Size: image.Pt(barW, barH)}
 }
 
+func (a *App) layoutPlaybackBar(gtx layout.Context) layout.Dimensions {
+	player := a.player
+	if player == nil {
+		return layout.Dimensions{}
+	}
+
+	total := int(player.FrameCount())
+	if total == 0 {
+		total = 1
+	}
+	current := player.FrameIndex()
+	if current > total {
+		current = total
+	}
+	paused := player.IsPaused()
+
+	barH := gtx.Dp(unit.Dp(28))
+	lightGray := color.NRGBA{R: 220, G: 220, B: 220, A: 255}
+	bgColor := color.NRGBA{R: 35, G: 35, B: 35, A: 255}
+
+	return layout.Background{}.Layout(gtx,
+		func(gtx layout.Context) layout.Dimensions {
+			defer clip.Rect{Max: gtx.Constraints.Min}.Push(gtx.Ops).Pop()
+			paint.Fill(gtx.Ops, bgColor)
+			return layout.Dimensions{Size: gtx.Constraints.Min}
+		},
+		func(gtx layout.Context) layout.Dimensions {
+			return layout.UniformInset(unit.Dp(2)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+				return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+					// Play/Pause button
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						if a.playPauseClick.Clicked(gtx) {
+							player.SetPaused(!paused)
+						}
+						return material.Clickable(gtx, &a.playPauseClick, func(gtx layout.Context) layout.Dimensions {
+							btnBg := color.NRGBA{R: 50, G: 50, B: 50, A: 255}
+							if a.playPauseClick.Hovered() {
+								btnBg = color.NRGBA{R: 70, G: 70, B: 70, A: 255}
+							}
+							return layout.Background{}.Layout(gtx,
+								func(gtx layout.Context) layout.Dimensions {
+									defer clip.Rect{Max: gtx.Constraints.Min}.Push(gtx.Ops).Pop()
+									paint.Fill(gtx.Ops, btnBg)
+									return layout.Dimensions{Size: gtx.Constraints.Min}
+								},
+								func(gtx layout.Context) layout.Dimensions {
+									return layout.Inset{Left: unit.Dp(8), Right: unit.Dp(8), Top: unit.Dp(2), Bottom: unit.Dp(2)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+										txt := "PLAY"
+										if !paused {
+											txt = "PAUS"
+										}
+										lbl := material.Body2(a.theme, txt)
+										lbl.Color = lightGray
+										lbl.Font.Weight = font.Bold
+										return lbl.Layout(gtx)
+									})
+								},
+							)
+						})
+					}),
+					// Slider (Flexed — left edge anchored next to button)
+					layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+						return a.layoutSlider(gtx, current, total, barH)
+					}),
+					// Frame counter + absolute time (right side, Rigid)
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						return layout.Inset{Left: unit.Dp(6), Right: unit.Dp(4)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+							ft := player.FrameTime()
+							txt := fmt.Sprintf("%d/%d  %s", current, total, ft.Format("2006-01-02 15:04:05"))
+							lbl := material.Body2(a.theme, txt)
+							lbl.Color = lightGray
+							return lbl.Layout(gtx)
+						})
+					}),
+				)
+			})
+		},
+	)
+}
+
+func (a *App) layoutSlider(gtx layout.Context, current, total, barH int) layout.Dimensions {
+	sliderH := gtx.Dp(unit.Dp(12))
+	trackH := gtx.Dp(unit.Dp(4))
+	w := gtx.Constraints.Max.X
+	if w < 1 {
+		w = 1
+	}
+
+	// Slider track area — register pointer events
+	area := clip.Rect{Max: image.Pt(w, sliderH)}.Push(gtx.Ops)
+	event.Op(gtx.Ops, &a.sliderTag)
+	area.Pop()
+
+	// Handle pointer events (click, drag, scroll)
+	filters := []event.Filter{
+		pointer.Filter{
+			Target: &a.sliderTag,
+			Kinds:  pointer.Press | pointer.Drag | pointer.Release | pointer.Scroll,
+			ScrollY: pointer.ScrollRange{Min: -10, Max: 10},
+		},
+	}
+	for {
+		ev, ok := gtx.Source.Event(filters...)
+		if !ok {
+			break
+		}
+		pe, ok := ev.(pointer.Event)
+		if !ok {
+			continue
+		}
+		switch pe.Kind {
+		case pointer.Press:
+			a.sliderDragging = true
+			idx := a.sliderPosToFrame(pe.Position.X, float32(w), total)
+			a.seekToFrame(idx)
+		case pointer.Drag:
+			if a.sliderDragging {
+				idx := a.sliderPosToFrame(pe.Position.X, float32(w), total)
+				a.seekToFrame(idx)
+			}
+		case pointer.Release:
+			a.sliderDragging = false
+		case pointer.Scroll:
+			if a.player != nil && a.player.IsPaused() {
+				skip := int(pe.Scroll.Y)
+				idx := current + skip
+				if idx < 0 {
+					idx = 0
+				}
+				if idx >= total {
+					idx = total - 1
+				}
+				a.seekToFrame(idx)
+			}
+		}
+	}
+
+	// Draw track background
+	trackY := (sliderH - trackH) / 2
+	{
+		s := clip.Rect{Min: image.Pt(0, trackY), Max: image.Pt(w, trackY+trackH)}.Push(gtx.Ops)
+		paint.Fill(gtx.Ops, color.NRGBA{R: 80, G: 80, B: 80, A: 255})
+		s.Pop()
+	}
+
+	// Draw filled portion
+	frac := float32(current) / float32(total)
+	filledW := int(frac * float32(w))
+	{
+		s := clip.Rect{Min: image.Pt(0, trackY), Max: image.Pt(filledW, trackY+trackH)}.Push(gtx.Ops)
+		paint.Fill(gtx.Ops, color.NRGBA{R: 80, G: 140, B: 220, A: 255})
+		s.Pop()
+	}
+
+	// Draw thumb
+	thumbW := gtx.Dp(unit.Dp(8))
+	thumbX := filledW - thumbW/2
+	if thumbX < 0 {
+		thumbX = 0
+	}
+	{
+		s := clip.Rect{Min: image.Pt(thumbX, 0), Max: image.Pt(thumbX+thumbW, sliderH)}.Push(gtx.Ops)
+		paint.Fill(gtx.Ops, color.NRGBA{R: 160, G: 200, B: 255, A: 255})
+		s.Pop()
+	}
+
+	return layout.Dimensions{Size: image.Pt(w, sliderH)}
+}
+
+func (a *App) sliderPosToFrame(x float32, width float32, total int) int {
+	if width <= 0 {
+		return 0
+	}
+	frac := x / width
+	if frac < 0 {
+		frac = 0
+	}
+	if frac > 1 {
+		frac = 1
+	}
+	idx := int(frac * float32(total))
+	if idx >= total {
+		idx = total - 1
+	}
+	return idx
+}
+
+func (a *App) seekToFrame(idx int) {
+	if a.player == nil {
+		return
+	}
+	frame, err := a.player.SeekTo(idx)
+	if err != nil {
+		log.Printf("seek: %v", err)
+		return
+	}
+	// Process and display the seeked frame
+	go func() {
+		a.UpdateFrame(frame)
+	}()
+}
+
 func (a *App) layoutStatus(gtx layout.Context, result *colorize.Result) layout.Dimensions {
 	a.mu.Lock()
 	p := a.params
@@ -849,9 +1147,15 @@ func (a *App) layoutStatus(gtx layout.Context, result *colorize.Result) layout.D
 	preset := colorize.EmissivityPresets[eIdx]
 	epsLabel := fmt.Sprintf(" e: %.2f %s ", preset.Emissivity, preset.Name)
 
+	// Recording/playback indicator
+	recStr := ""
+	if a.recorder != nil {
+		recStr = fmt.Sprintf("  |  REC %d", a.recorder.Frames())
+	}
+
 	leftStatus := fmt.Sprintf("[C] %-10s  |  [A] %-10s  |  [G] Gain: %-4s  |",
 		p.Palette, agcName(p.Mode), gainStr)
-	rightStatus := fmt.Sprintf("|  [R] %d\u00b0  |  [H] Help", a.rotation*90)
+	rightStatus := fmt.Sprintf("|  [R] %d\u00b0  |  [H] Help%s", a.rotation*90, recStr)
 
 	lightGray := color.NRGBA{R: 220, G: 220, B: 220, A: 255}
 
@@ -933,7 +1237,12 @@ func (a *App) layoutHelp(gtx layout.Context) {
 		{"Click", "Place/remove point"},
 		{"Shift+Click", "Select spot (for E)"},
 		{"0-9", "Toggle graph for spot"},
-		{"Space", "Save screenshot (PNG)"},
+		{"Space", "Play/pause (playback)"},
+		{"F12", "Save screenshot (PNG)"},
+		{"D", "Dump raw frame (.p3t)"},
+		{"F5", "Start/stop recording (.p3t)"},
+		{"P", "Pause/resume playback"},
+		{"Left/Right", "Step frame (playback)"},
 		{"H", "Toggle this help"},
 	}
 
@@ -1041,4 +1350,51 @@ func (a *App) saveScreenshot(img *image.RGBA) {
 	a.toastExpiry = time.Now().Add(3 * time.Second)
 	a.mu.Unlock()
 	a.Window.Invalidate()
+}
+
+func (a *App) dumpFrame(frame *camera.Frame) {
+	name := fmt.Sprintf("thermal_%s.p3t", time.Now().Format("20060102_150405"))
+	if err := recording.DumpFrame(name, frame); err != nil {
+		log.Printf("frame dump: %v", err)
+		return
+	}
+	log.Printf("dumped raw frame: %s", name)
+
+	a.mu.Lock()
+	a.toastMsg = fmt.Sprintf("Frame dumped: %s", name)
+	a.toastExpiry = time.Now().Add(3 * time.Second)
+	a.mu.Unlock()
+	a.Window.Invalidate()
+}
+
+func (a *App) toggleRecording() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if a.recorder != nil {
+		// Stop recording
+		frames := a.recorder.Frames()
+		if err := a.recorder.Close(); err != nil {
+			log.Printf("stop recording: %v", err)
+		}
+		a.recorder = nil
+		a.toastMsg = fmt.Sprintf("Recording stopped (%d frames)", frames)
+		a.toastExpiry = time.Now().Add(3 * time.Second)
+		return
+	}
+
+	// Start recording
+	size := a.cam.SensorSize()
+	name := fmt.Sprintf("thermal_%s.p3t", time.Now().Format("20060102_150405"))
+	rec, err := recording.NewRecorder(name, size.X, size.Y)
+	if err != nil {
+		log.Printf("start recording: %v", err)
+		a.toastMsg = fmt.Sprintf("Recording failed: %v", err)
+		a.toastExpiry = time.Now().Add(3 * time.Second)
+		return
+	}
+	a.recorder = rec
+	a.toastMsg = fmt.Sprintf("Recording: %s", name)
+	a.toastExpiry = time.Now().Add(3 * time.Second)
+	log.Printf("recording started: %s", name)
 }

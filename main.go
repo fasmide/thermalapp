@@ -1,16 +1,30 @@
 package main
 
 import (
+	"flag"
 	"log"
 	"os"
 
 	"gioui.org/app"
 
 	"thermalapp/camera"
+	"thermalapp/recording"
 	"thermalapp/ui"
 )
 
 func main() {
+	playFile := flag.String("play", "", "play back a .p3t recording file instead of connecting to camera")
+	flag.Parse()
+
+	if *playFile != "" {
+		runPlayback(*playFile)
+		return
+	}
+
+	runLive()
+}
+
+func runLive() {
 	cam := camera.NewP3Camera()
 
 	log.Println("Connecting to P3 camera...")
@@ -47,6 +61,41 @@ func main() {
 	}()
 
 	// Gio main loop (must run on main thread)
+	go func() {
+		if err := a.Run(); err != nil {
+			log.Printf("ui: %v", err)
+		}
+		os.Exit(0)
+	}()
+
+	app.Main()
+}
+
+func runPlayback(filename string) {
+	player, err := recording.NewPlayer(filename)
+	if err != nil {
+		log.Fatalf("open recording: %v", err)
+	}
+	defer player.Close()
+
+	h := player.Header()
+	log.Printf("Playing %s: %dx%d, %d frames", filename, h.Width, h.Height, h.FrameCount)
+
+	a := ui.NewApp(player)
+	a.SetPlayer(player)
+
+	// Frame reader goroutine (respects original timing)
+	go func() {
+		for {
+			frame, err := player.ReadFrame()
+			if err != nil {
+				// "paused" is not a real error
+				continue
+			}
+			a.UpdateFrame(frame)
+		}
+	}()
+
 	go func() {
 		if err := a.Run(); err != nil {
 			log.Printf("ui: %v", err)
