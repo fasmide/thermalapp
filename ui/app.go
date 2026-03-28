@@ -1312,62 +1312,96 @@ func (a *App) layoutStatus(gtx layout.Context, result *colorize.Result) layout.D
 
 func (a *App) layoutHelp(gtx layout.Context) {
 	type row struct{ key, desc string }
-	rows := []row{
-		{"Q / Esc", "Quit"},
-		{"C", "Cycle colormap"},
-		{"A", "Cycle AGC mode"},
-		{"G", "Toggle gain (High/Low)"},
-		{"S", "Trigger shutter/NUC"},
-		{"R", "Rotate 90\u00b0"},
-		{"T", "Toggle temp labels"},
-		{"E / Shift+E", "Cycle emissivity \u2192 / \u2190"},
-		{"V", "Toggle colorbar"},
-		{"X", "Clear user points"},
-		{"Click", "Place/remove point"},
-		{"Shift+Click", "Select spot (for E)"},
-		{"0-9", "Toggle graph for spot"},
-		{"Space", "Play/pause (playback)"},
-		{"F12", "Save screenshot (PNG)"},
-		{"D", "Dump raw frame (.tha)"},
-		{"F5", "Start/stop recording (.tha)"},
-		{"P", "Pause/resume playback"},
-		{"Left/Right", "Step frame (playback)"},
-		{"H", "Toggle this help"},
+	type section struct {
+		title string
+		rows  []row
+	}
+	sections := []section{
+		{"Display", []row{
+			{"C", "Cycle colormap"},
+			{"A", "Cycle AGC mode"},
+			{"V", "Toggle colorbar"},
+			{"R", "Rotate 90\u00b0"},
+			{"T", "Toggle temp labels"},
+		}},
+		{"Camera", []row{
+			{"G", "Toggle gain (High/Low)"},
+			{"S", "Trigger shutter/NUC"},
+			{"E / Shift+E", "Cycle emissivity \u2192 / \u2190"},
+		}},
+		{"Measurement", []row{
+			{"Click", "Place/remove point"},
+			{"Shift+Click", "Select spot (for E)"},
+			{"X", "Clear user points"},
+			{"0-9", "Toggle graph for spot"},
+		}},
+		{"Recording & Export", []row{
+			{"F12", "Save screenshot (PNG)"},
+			{"D", "Dump raw frame (.tha)"},
+			{"F5", "Start/stop recording (.tha)"},
+		}},
+		{"Playback", []row{
+			{"Space", "Play/pause"},
+			{"P", "Pause/resume"},
+			{"Left/Right", "Step frame"},
+		}},
+		{"General", []row{
+			{"H", "Toggle this help"},
+			{"Q / Esc", "Quit"},
+		}},
 	}
 
 	lightGray := color.NRGBA{R: 220, G: 220, B: 220, A: 255}
-	keyW := gtx.Dp(unit.Dp(80))
+	dimGray := color.NRGBA{R: 160, G: 160, B: 160, A: 255}
+	keyW := gtx.Dp(unit.Dp(100))
 
 	// Semi-transparent background
 	defer op.Offset(image.Pt(20, 20)).Push(gtx.Ops).Pop()
 
-	// Title + rows
+	// Title + categorized rows
 	children := []layout.FlexChild{
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			lbl := material.Body2(a.theme, "Keyboard Controls")
+			lbl := material.Body1(a.theme, "Keyboard Controls")
 			lbl.Color = lightGray
 			lbl.Font.Weight = font.Bold
-			return layout.Inset{Bottom: unit.Dp(4)}.Layout(gtx, lbl.Layout)
+			return layout.Inset{Bottom: unit.Dp(6)}.Layout(gtx, lbl.Layout)
 		}),
 	}
-	for _, r := range rows {
-		r := r
+
+	for i, sec := range sections {
+		sec := sec
+		isFirst := i == 0
 		children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
-				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					gtx.Constraints.Min.X = keyW
-					gtx.Constraints.Max.X = keyW
-					lbl := material.Body2(a.theme, r.key)
-					lbl.Color = lightGray
-					return lbl.Layout(gtx)
-				}),
-				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					lbl := material.Body2(a.theme, r.desc)
-					lbl.Color = lightGray
-					return lbl.Layout(gtx)
-				}),
-			)
+			topPad := unit.Dp(10)
+			if isFirst {
+				topPad = unit.Dp(2)
+			}
+			return layout.Inset{Top: topPad, Bottom: unit.Dp(2)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+				lbl := material.Body2(a.theme, sec.title)
+				lbl.Color = dimGray
+				lbl.Font.Weight = font.Bold
+				return lbl.Layout(gtx)
+			})
 		}))
+		for _, r := range sec.rows {
+			r := r
+			children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						gtx.Constraints.Min.X = keyW
+						gtx.Constraints.Max.X = keyW
+						lbl := material.Body2(a.theme, r.key)
+						lbl.Color = lightGray
+						return lbl.Layout(gtx)
+					}),
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						lbl := material.Body2(a.theme, r.desc)
+						lbl.Color = lightGray
+						return lbl.Layout(gtx)
+					}),
+				)
+			}))
+		}
 	}
 
 	// Measure content first, then draw background behind it
