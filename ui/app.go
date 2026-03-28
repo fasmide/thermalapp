@@ -223,6 +223,48 @@ func (a *App) UpdateFrame(frame *camera.Frame) {
 	a.Window.Invalidate()
 }
 
+// refreshDisplay re-colorizes the last raw frame with the current params.
+// Call after changing palette, emissivity, AGC mode, or rotation while paused.
+func (a *App) refreshDisplay() {
+	a.mu.Lock()
+	frame := a.lastFrame
+	p := a.params
+	rot := a.rotation
+	a.mu.Unlock()
+
+	if frame == nil {
+		return
+	}
+
+	result := colorize.Colorize(frame, p).Rotate(rot)
+
+	a.mu.Lock()
+	a.result = result
+	a.mu.Unlock()
+
+	imgW := result.RGBA.Bounds().Dx()
+
+	// Re-read spot temperatures at their current positions.
+	for i, sp := range a.spots {
+		st := sp.GetState()
+		if !st.Active {
+			continue
+		}
+		idx := int(st.Y)*imgW + int(st.X)
+		if idx < 0 || idx >= len(result.Celsius) {
+			continue
+		}
+		if i >= 3 {
+			temp := sp.CorrectedTemp(result.Celsius[idx], result.GlobalEmissivity, result.AmbientC)
+			sp.Record(temp)
+		} else {
+			sp.Record(result.Celsius[idx])
+		}
+	}
+
+	a.Window.Invalidate()
+}
+
 func (a *App) Run() error {
 	var ops op.Ops
 	for {
@@ -299,6 +341,7 @@ func (a *App) handleKeys(gtx layout.Context) {
 			a.mu.Lock()
 			a.params.Palette = a.params.Palette.Next()
 			a.mu.Unlock()
+			a.refreshDisplay()
 
 		case "A":
 			a.mu.Lock()
@@ -311,6 +354,7 @@ func (a *App) handleKeys(gtx layout.Context) {
 				a.params.Mode = colorize.AGCPercentile
 			}
 			a.mu.Unlock()
+			a.refreshDisplay()
 
 		case "G":
 			if a.gainMode == camera.GainHigh {
@@ -341,6 +385,7 @@ func (a *App) handleKeys(gtx layout.Context) {
 
 		case "R":
 			a.rotation = (a.rotation + 1) % 4
+			a.refreshDisplay()
 
 		case "T":
 			a.showLabels = !a.showLabels
@@ -383,6 +428,7 @@ func (a *App) handleKeys(gtx layout.Context) {
 			}
 			a.toastExpiry = time.Now().Add(2 * time.Second)
 			a.mu.Unlock()
+			a.refreshDisplay()
 
 		case "X":
 			a.mu.Lock()
@@ -501,6 +547,12 @@ func (a *App) handlePointer(gtx layout.Context) {
 			cursorSpot := a.spots[2]
 			if r != nil && imgX >= 0 && imgY >= 0 && imgX < r.RGBA.Bounds().Dx() && imgY < r.RGBA.Bounds().Dy() {
 				cursorSpot.SetPosition(float32(imgX), float32(imgY), true)
+				// Update cursor temperature immediately so the label reflects the current pixel
+				imgW := r.RGBA.Bounds().Dx()
+				cIdx := imgY*imgW + imgX
+				if cIdx >= 0 && cIdx < len(r.Celsius) {
+					cursorSpot.Record(r.Celsius[cIdx])
+				}
 			} else {
 				cursorSpot.SetActive(false)
 			}
@@ -647,6 +699,7 @@ func (a *App) doLayout(gtx layout.Context) layout.Dimensions {
 			a.toastMsg = fmt.Sprintf("ε = %.2f  %s", preset.Emissivity, preset.Name)
 			a.toastExpiry = time.Now().Add(2 * time.Second)
 			a.mu.Unlock()
+			a.refreshDisplay()
 		}
 	}
 
@@ -1239,8 +1292,8 @@ func (a *App) layoutHelp(gtx layout.Context) {
 		{"0-9", "Toggle graph for spot"},
 		{"Space", "Play/pause (playback)"},
 		{"F12", "Save screenshot (PNG)"},
-		{"D", "Dump raw frame (.p3t)"},
-		{"F5", "Start/stop recording (.p3t)"},
+		{"D", "Dump raw frame (.tha)"},
+		{"F5", "Start/stop recording (.tha)"},
 		{"P", "Pause/resume playback"},
 		{"Left/Right", "Step frame (playback)"},
 		{"H", "Toggle this help"},
@@ -1353,7 +1406,7 @@ func (a *App) saveScreenshot(img *image.RGBA) {
 }
 
 func (a *App) dumpFrame(frame *camera.Frame) {
-	name := fmt.Sprintf("thermal_%s.p3t", time.Now().Format("20060102_150405"))
+	name := fmt.Sprintf("thermal_%s.tha", time.Now().Format("20060102_150405"))
 	if err := recording.DumpFrame(name, frame); err != nil {
 		log.Printf("frame dump: %v", err)
 		return
@@ -1385,7 +1438,7 @@ func (a *App) toggleRecording() {
 
 	// Start recording
 	size := a.cam.SensorSize()
-	name := fmt.Sprintf("thermal_%s.p3t", time.Now().Format("20060102_150405"))
+	name := fmt.Sprintf("thermal_%s.tha", time.Now().Format("20060102_150405"))
 	rec, err := recording.NewRecorder(name, size.X, size.Y)
 	if err != nil {
 		log.Printf("start recording: %v", err)

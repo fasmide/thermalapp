@@ -13,7 +13,7 @@ import (
 )
 
 func main() {
-	playFile := flag.String("play", "", "play back a .p3t recording file instead of connecting to camera")
+	playFile := flag.String("play", "", "play back a .tha recording file instead of connecting to camera")
 	flag.Parse()
 
 	if *playFile != "" {

@@ -15,7 +15,7 @@ import (
 	"thermalapp/camera"
 )
 
-// Player reads frames from a .p3t recording file and implements camera.Camera
+// Player reads frames from a .tha recording file and implements camera.Camera
 // so it can be used in place of a live camera for the UI.
 type Player struct {
 	mu       sync.Mutex
@@ -35,7 +35,7 @@ type Player struct {
 	firstRead bool
 }
 
-// NewPlayer opens a .p3t file for playback.
+// NewPlayer opens a .tha file for playback.
 func NewPlayer(filename string) (*Player, error) {
 	f, err := os.Open(filename)
 	if err != nil {

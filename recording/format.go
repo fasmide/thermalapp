@@ -1,9 +1,9 @@
 // Package recording implements radiometric thermal frame recording and playback.
 //
-// File format (.p3t):
+// File format (.tha):
 //
 //	Header (32 bytes):
-//	  [0:8]   Magic "P3THERM\x00"
+//	  [0:8]   Magic "THERMAP\x00"
 //	  [8:10]  Version uint16 LE (2)
 //	  [10:12] SensorWidth uint16 LE
 //	  [12:14] SensorHeight uint16 LE
@@ -26,7 +26,7 @@ import (
 	"io"
 )
 
-var magic = [8]byte{'P', '3', 'T', 'H', 'E', 'R', 'M', 0}
+var magic = [8]byte{'T', 'H', 'E', 'R', 'M', 'A', 'P', 0}
 
 const (
 	headerSize         = 32
@@ -78,7 +78,7 @@ func readHeader(r io.Reader) (Header, error) {
 	if buf[0] != magic[0] || buf[1] != magic[1] || buf[2] != magic[2] ||
 		buf[3] != magic[3] || buf[4] != magic[4] || buf[5] != magic[5] ||
 		buf[6] != magic[6] || buf[7] != magic[7] {
-		return Header{}, fmt.Errorf("not a .p3t file (bad magic)")
+		return Header{}, fmt.Errorf("not a .tha file (bad magic)")
 	}
 	ver := binary.LittleEndian.Uint16(buf[8:10])
 	if ver != formatVersion {

@@ -13,7 +13,7 @@ import (
 	"thermalapp/camera"
 )
 
-// Recorder writes raw thermal frames to a .p3t v2 file (deflate-compressed).
+// Recorder writes raw thermal frames to a .tha file (deflate-compressed).
 type Recorder struct {
 	mu     sync.Mutex
 	file   *os.File
@@ -154,7 +154,7 @@ func (r *Recorder) Frames() uint32 {
 	return r.frames
 }
 
-// DumpFrame writes a single frame to a .p3t file (convenience for D key).
+// DumpFrame writes a single frame to a .tha file (convenience for D key).
 func DumpFrame(filename string, frame *camera.Frame) error {
 	rec, err := NewRecorder(filename, frame.Width, frame.Height)
 	if err != nil {
