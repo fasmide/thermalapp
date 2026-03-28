@@ -15,11 +15,12 @@ import (
 
 // Recorder writes raw thermal frames to a .tha file (deflate-compressed).
 type Recorder struct {
-	mu     sync.Mutex
-	file   *os.File
-	header Header
-	start  time.Time
-	frames uint32
+	mu           sync.Mutex
+	file         *os.File
+	header       Header
+	start        time.Time
+	frames       uint32
+	bytesWritten int64
 
 	// Reusable buffers to avoid allocations per frame
 	rawBuf   []byte       // uncompressed frame payload
@@ -48,10 +49,11 @@ func NewRecorder(filename string, sensorW, sensorH int) (*Recorder, error) {
 	}
 
 	rec := &Recorder{
-		file:   f,
-		header: h,
-		start:  now,
-		rawBuf: make([]byte, h.framePayloadSize()),
+		file:         f,
+		header:       h,
+		start:        now,
+		rawBuf:       make([]byte, h.framePayloadSize()),
+		bytesWritten: headerSize,
 	}
 
 	// flate.BestSpeed (level 1) — fast enough for 25fps, still good compression
@@ -124,6 +126,7 @@ func (r *Recorder) WriteFrame(frame *camera.Frame) error {
 		return err
 	}
 
+	r.bytesWritten += int64(frameSizePrefixLen) + int64(r.compBuf.Len())
 	r.frames++
 	return nil
 }
@@ -158,6 +161,13 @@ func (r *Recorder) Frames() uint32 {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.frames
+}
+
+// FileSize returns the current size of the recording file in bytes.
+func (r *Recorder) FileSize() int64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.bytesWritten
 }
 
 // DumpFrame writes a single frame to a .tha file (convenience for D key).

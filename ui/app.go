@@ -1239,7 +1239,7 @@ func (a *App) layoutStatus(gtx layout.Context, result *colorize.Result) layout.D
 	// Recording/playback indicator
 	recStr := ""
 	if a.recorder != nil {
-		recStr = fmt.Sprintf("  |  REC %d", a.recorder.Frames())
+		recStr = fmt.Sprintf("  |  REC %d  %s", a.recorder.Frames(), humanSize(a.recorder.FileSize()))
 	}
 
 	leftStatus := fmt.Sprintf("[C] %-10s  |  [A] %-10s  |  [G] Gain: %-4s  |",
@@ -1418,6 +1418,27 @@ func agcName(m colorize.AGCMode) string {
 		return "Fixed"
 	}
 	return "?"
+}
+
+func humanSize(b int64) string {
+	const (
+		KB = 1024
+		MB = 1024 * KB
+		GB = 1024 * MB
+		TB = 1024 * GB
+	)
+	switch {
+	case b >= TB:
+		return fmt.Sprintf("%.1f TB", float64(b)/float64(TB))
+	case b >= GB:
+		return fmt.Sprintf("%.1f GB", float64(b)/float64(GB))
+	case b >= MB:
+		return fmt.Sprintf("%.1f MB", float64(b)/float64(MB))
+	case b >= KB:
+		return fmt.Sprintf("%.1f KB", float64(b)/float64(KB))
+	default:
+		return fmt.Sprintf("%d B", b)
+	}
 }
 
 func (a *App) saveScreenshot(img *image.RGBA) {

@@ -13,7 +13,10 @@ A real-time thermal camera viewer for the InfiRay Thermal Master P3 (and similar
 - **Measurement spots** — auto-tracking min/max, cursor readout, and click-to-place user points
 - **Temperature graphs** — per-spot live graph windows with min/max/mean/stddev statistics
 - **Per-spot emissivity** — each measurement point can have its own emissivity setting
-- **Rotation, gain toggle, shutter/NUC, colorbar, screenshots**
+- **Rotation, gain toggle, shutter/NUC detection, colorbar, screenshots**
+- **Radiometric recording** — record raw thermal frames to `.tha` files with full re-colorization on playback
+- **Single-frame dump** — save one raw frame for offline analysis
+- **Playback mode** — play back recordings without camera hardware, with slider, frame stepping, and pause
 
 ## Quick Start
 
@@ -50,6 +53,10 @@ sudo dnf install libusb1-devel
 | `V` | Toggle colorbar |
 | `X` | Clear all user measurement points |
 | `0`-`9` | Toggle graph window for spot N |
+| `D` | Dump current frame to `.tha` file |
+| `F5` | Start/stop recording |
+| `P` | Pause / resume (live or playback) |
+| `Left` / `Right` | Step one frame (playback, when paused) |
 | `Space` | Save screenshot (PNG) |
 | `H` | Toggle help overlay |
 | `Q` / `Esc` | Quit |
@@ -58,6 +65,7 @@ sudo dnf install libusb1-devel
 |-------|--------|
 | Click | Place or remove a measurement point |
 | Shift+Click | Select a spot for per-spot emissivity |
+| Scroll wheel | Step frames (playback mode) |
 | Click emissivity in status bar | Open emissivity preset picker |
 
 ## Emissivity
@@ -84,23 +92,64 @@ Preset values are sourced from Modest *Radiative Heat Transfer*, Touloukian *The
 
 Global emissivity applies to the entire frame. Individual spots can override it — useful when measuring different materials in the same scene (e.g. a copper heatsink next to a PCB).
 
+## Recording & Playback
+
+thermalapp can record raw radiometric data — not just screenshots — so that recordings can be re-colorized, re-analyzed with different palettes, AGC modes, and emissivity settings after the fact.
+
+### Single Frame Dump
+
+Press `D` to save the current frame as a `.tha` file. This captures one complete radiometric frame (thermal + IR data) for offline analysis.
+
+### Continuous Recording
+
+Press `F5` to start recording. All incoming frames are written to a timestamped `.tha` file with per-frame deflate compression. Press `F5` again to stop. The status bar shows `REC <count>` while recording.
+
+### Playback
+
+Play back a recording without needing the camera:
+
+```bash
+./thermalapp -play recording_20260328_143000.tha
+```
+
+Playback provides:
+- A **slider** to scrub through frames
+- **Play/pause** with `P`
+- **Frame stepping** with `Left`/`Right` arrow keys or scroll wheel
+- **Absolute timestamps** — each frame's original capture time is preserved
+- Full access to all viewer features (palettes, AGC, emissivity, spots, graphs)
+- **NUC detection** — frames captured during shutter calibration are flagged and display a red "NUC" badge
+
+### File Format (.tha)
+
+The `.tha` format is a compact, seekable binary format:
+
+- **32-byte header**: magic (`THERMAP`), version, sensor dimensions, frame count, start time
+- **Per frame**: 4-byte compressed size prefix + deflate-compressed block containing timestamp, flags (shutter state), hardware frame counter, raw uint16 thermal data, and uint8 IR data
+- Typical compression ratio: ~3:1 (deflate level 1 for real-time performance)
+- A 10-second recording at 25fps is roughly 26 MB
+
+Recordings are camera-agnostic — the format stores raw sensor data without assumptions about the source device.
+
 ## Architecture
 
 ```
-USB Camera ──> camera/p3.go ──> camera.Frame
-                                    │
-                                    v
-                             colorize.Colorize()
-                             (AGC + palette + emissivity)
-                                    │
-                                    v
-                              colorize.Result
-                             (RGBA + Celsius[])
-                                    │
-                    ┌───────────────┼───────────────┐
-                    v               v               v
-               ui/app.go      ui/spot.go      ui/graph.go
-              (main window)   (measurement)   (graph windows)
+USB Camera ──> camera/p3.go ──> camera.Frame ──┬──> recording/recorder.go ──> .tha file
+                                               │
+.tha file ──> recording/player.go ─────────────┘
+                                               │
+                                               v
+                                        colorize.Colorize()
+                                        (AGC + palette + emissivity)
+                                               │
+                                               v
+                                         colorize.Result
+                                        (RGBA + Celsius[])
+                                               │
+                    ┌──────────────────────────┼──────────────────────────┐
+                    v                          v                          v
+               ui/app.go                 ui/spot.go                ui/graph.go
+              (main window)             (measurement)             (graph windows)
 ```
 
 ## Camera Support
@@ -124,6 +173,8 @@ type Camera interface {
 ## Protocol Reference
 
 See [p3-ir-camera/P3_PROTOCOL.md](p3-ir-camera/P3_PROTOCOL.md) for the complete USB protocol documentation, including frame layout, command structure, and metadata fields.
+
+See [METADATA-PROTOCOL.md](METADATA-PROTOCOL.md) for reverse-engineered metadata row register assignments (shutter detection, frame counters, sensor temperatures).
 
 ## License
 
