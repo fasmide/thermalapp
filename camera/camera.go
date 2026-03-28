@@ -28,6 +28,15 @@ type Frame struct {
 
 	// Width and Height of the thermal/IR image.
 	Width, Height int
+
+	// ShutterActive is true when the sensor shutter is closed (NUC calibration
+	// in progress). Frames with ShutterActive=true contain stale/invalid data.
+	ShutterActive bool
+
+	// ShutterCountdown is an approximate countdown to the next automatic shutter
+	// event, in the range [0, ~2300]. Derived from metadata register 72.
+	// When it reaches a low value the camera will auto-trigger NUC.
+	ShutterCountdown uint16
 }
 
 // ToCelsius converts a raw uint16 thermal value to degrees Celsius.

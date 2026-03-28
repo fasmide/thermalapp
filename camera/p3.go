@@ -33,12 +33,17 @@ type P3Camera struct {
 	gainMode  GainMode
 
 	frameBuf []byte
+
+	// Shutter detection: metadata register 64 is the camera's frame counter.
+	// When it stops incrementing, the shutter is active (NUC in progress).
+	prevFrameCnt uint16
+	firstFrame   bool
 }
 
 var _ Camera = (*P3Camera)(nil)
 
 func NewP3Camera() *P3Camera {
-	return &P3Camera{gainMode: GainHigh}
+	return &P3Camera{gainMode: GainHigh, firstFrame: true}
 }
 
 func (c *P3Camera) SensorSize() image.Point {
@@ -225,7 +230,26 @@ func (c *P3Camera) ReadFrame() (*Frame, error) {
 		log.Printf("marker cnt1 mismatch: start=%d end=%d", startMarker.Cnt1, endMarker.Cnt1)
 	}
 
-	return ParseP3Frame(c.frameBuf[:markerSize+p3FrameSize])
+	frame, err := ParseP3Frame(c.frameBuf[:markerSize+p3FrameSize])
+	if err != nil {
+		return nil, err
+	}
+
+	// Populate shutter state from metadata registers.
+	// Register 64 = camera frame counter, register 72 = shutter countdown.
+	if len(frame.Metadata) > 72 {
+		frameCnt := frame.Metadata[64]
+		frame.ShutterCountdown = frame.Metadata[72]
+
+		if c.firstFrame {
+			c.firstFrame = false
+		} else if frameCnt == c.prevFrameCnt {
+			frame.ShutterActive = true
+		}
+		c.prevFrameCnt = frameCnt
+	}
+
+	return frame, nil
 }
 
 func (c *P3Camera) StopStreaming() error {

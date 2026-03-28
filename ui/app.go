@@ -85,8 +85,12 @@ type App struct {
 	tag bool
 
 	// Recording state
-	lastFrame *camera.Frame   // last raw frame for D-key dump
+	lastFrame *camera.Frame // last raw frame for D-key dump
 	recorder  *recording.Recorder
+
+	// Shutter/NUC state (updated each frame)
+	shutterActive    bool
+	shutterCountdown uint16
 
 	// Playback state (non-nil when playing a recording)
 	player *recording.Player
@@ -138,6 +142,8 @@ func (a *App) UpdateFrame(frame *camera.Frame) {
 	p := a.params
 	rot := a.rotation
 	a.lastFrame = frame
+	a.shutterActive = frame.ShutterActive
+	a.shutterCountdown = frame.ShutterCountdown
 	rec := a.recorder
 	a.mu.Unlock()
 
@@ -845,6 +851,14 @@ func (a *App) layoutImage(gtx layout.Context, result *colorize.Result) layout.Di
 		a.drawTempLabel(gtx, cx, cy, cursorSpot.LastTemp(), cursorSpot.Color)
 	}
 
+	// NUC (shutter) indicator — top-right of image area
+	a.mu.Lock()
+	nucActive := a.shutterActive
+	a.mu.Unlock()
+	if nucActive {
+		a.drawNUCIndicator(gtx, offsetX+scaledW, offsetY)
+	}
+
 	return layout.Dimensions{Size: gtx.Constraints.Max}
 }
 
@@ -920,6 +934,30 @@ func (a *App) drawTempLabel(gtx layout.Context, sx, sy int, temp float32, col co
 	pill := clip.Rect{Max: dims.Size}.Push(gtx.Ops)
 	paint.Fill(gtx.Ops, col)
 	pill.Pop()
+
+	call.Add(gtx.Ops)
+	s.Pop()
+}
+
+// drawNUCIndicator draws a "NUC" badge at the top-right of the image area.
+func (a *App) drawNUCIndicator(gtx layout.Context, rightX, topY int) {
+	macro := op.Record(gtx.Ops)
+	gtx.Constraints.Min = image.Point{}
+	dims := layout.Inset{Left: unit.Dp(6), Right: unit.Dp(6), Top: unit.Dp(3), Bottom: unit.Dp(3)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+		lbl := material.Body1(a.theme, "NUC")
+		lbl.Color = color.NRGBA{R: 255, G: 255, B: 255, A: 255}
+		lbl.Font.Weight = font.Bold
+		return lbl.Layout(gtx)
+	})
+	call := macro.Stop()
+
+	ox := rightX - dims.Size.X - gtx.Dp(unit.Dp(8))
+	oy := topY + gtx.Dp(unit.Dp(8))
+	s := op.Offset(image.Pt(ox, oy)).Push(gtx.Ops)
+
+	bg := clip.Rect{Max: dims.Size}.Push(gtx.Ops)
+	paint.Fill(gtx.Ops, color.NRGBA{R: 200, G: 40, B: 40, A: 220})
+	bg.Pop()
 
 	call.Add(gtx.Ops)
 	s.Pop()
@@ -1080,8 +1118,8 @@ func (a *App) layoutSlider(gtx layout.Context, current, total, barH int) layout.
 	// Handle pointer events (click, drag, scroll)
 	filters := []event.Filter{
 		pointer.Filter{
-			Target: &a.sliderTag,
-			Kinds:  pointer.Press | pointer.Drag | pointer.Release | pointer.Scroll,
+			Target:  &a.sliderTag,
+			Kinds:   pointer.Press | pointer.Drag | pointer.Release | pointer.Scroll,
 			ScrollY: pointer.ScrollRange{Min: -10, Max: 10},
 		},
 	}

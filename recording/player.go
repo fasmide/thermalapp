@@ -21,8 +21,8 @@ type Player struct {
 	mu       sync.Mutex
 	file     *os.File
 	header   Header
-	frameBuf []byte  // reusable decompressed frame payload buffer
-	frameIdx int     // current frame index (0-based)
+	frameBuf []byte // reusable decompressed frame payload buffer
+	frameIdx int    // current frame index (0-based)
 
 	// Frame offset index: file offset of each frame's size prefix
 	offsets []int64
@@ -321,6 +321,14 @@ func (p *Player) parseFrameData() *camera.Frame {
 	h := int(p.header.Height)
 	off := timestampSize
 
+	// Flags byte
+	flags := p.frameBuf[off]
+	off++
+
+	// ShutterCountdown
+	shutterCountdown := binary.LittleEndian.Uint16(p.frameBuf[off : off+2])
+	off += 2
+
 	thermalCount := w * h
 	thermal := make([]uint16, thermalCount)
 	for i := 0; i < thermalCount; i++ {
@@ -340,10 +348,12 @@ func (p *Player) parseFrameData() *camera.Frame {
 	}
 
 	return &camera.Frame{
-		Thermal:  thermal,
-		IR:       ir,
-		Metadata: metadata,
-		Width:    w,
-		Height:   h,
+		Thermal:          thermal,
+		IR:               ir,
+		Metadata:         metadata,
+		Width:            w,
+		Height:           h,
+		ShutterActive:    flags&0x01 != 0,
+		ShutterCountdown: shutterCountdown,
 	}
 }

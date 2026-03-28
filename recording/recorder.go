@@ -22,8 +22,8 @@ type Recorder struct {
 	frames uint32
 
 	// Reusable buffers to avoid allocations per frame
-	rawBuf  []byte        // uncompressed frame payload
-	compBuf bytes.Buffer  // compressed output
+	rawBuf   []byte       // uncompressed frame payload
+	compBuf  bytes.Buffer // compressed output
 	deflater *flate.Writer
 }
 
@@ -81,6 +81,18 @@ func (r *Recorder) WriteFrame(frame *camera.Frame) error {
 	// Timestamp
 	binary.LittleEndian.PutUint64(r.rawBuf[off:off+8], uint64(elapsed))
 	off += 8
+
+	// Flags byte (bit 0 = ShutterActive)
+	var flags uint8
+	if frame.ShutterActive {
+		flags |= 0x01
+	}
+	r.rawBuf[off] = flags
+	off++
+
+	// ShutterCountdown
+	binary.LittleEndian.PutUint16(r.rawBuf[off:off+2], frame.ShutterCountdown)
+	off += 2
 
 	// Thermal data (uint16 LE)
 	for _, v := range frame.Thermal {
