@@ -325,8 +325,8 @@ func (p *Player) parseFrameData() *camera.Frame {
 	flags := p.frameBuf[off]
 	off++
 
-	// ShutterCountdown
-	shutterCountdown := binary.LittleEndian.Uint16(p.frameBuf[off : off+2])
+	// HardwareFrameCounter
+	hwFrameCnt := binary.LittleEndian.Uint16(p.frameBuf[off : off+2])
 	off += 2
 
 	thermalCount := w * h
@@ -340,20 +340,12 @@ func (p *Player) parseFrameData() *camera.Frame {
 	copy(ir, p.frameBuf[off:off+w*h])
 	off += w * h
 
-	metaCount := metadataRows * w
-	metadata := make([]uint16, metaCount)
-	for i := 0; i < metaCount; i++ {
-		metadata[i] = binary.LittleEndian.Uint16(p.frameBuf[off : off+2])
-		off += 2
-	}
-
 	return &camera.Frame{
-		Thermal:          thermal,
-		IR:               ir,
-		Metadata:         metadata,
-		Width:            w,
-		Height:           h,
-		ShutterActive:    flags&0x01 != 0,
-		ShutterCountdown: shutterCountdown,
+		Thermal:              thermal,
+		IR:                   ir,
+		Width:                w,
+		Height:               h,
+		ShutterActive:        flags&0x01 != 0,
+		HardwareFrameCounter: hwFrameCnt,
 	}
 }

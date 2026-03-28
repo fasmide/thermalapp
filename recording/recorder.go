@@ -90,8 +90,8 @@ func (r *Recorder) WriteFrame(frame *camera.Frame) error {
 	r.rawBuf[off] = flags
 	off++
 
-	// ShutterCountdown
-	binary.LittleEndian.PutUint16(r.rawBuf[off:off+2], frame.ShutterCountdown)
+	// HardwareFrameCounter
+	binary.LittleEndian.PutUint16(r.rawBuf[off:off+2], frame.HardwareFrameCounter)
 	off += 2
 
 	// Thermal data (uint16 LE)
@@ -103,12 +103,6 @@ func (r *Recorder) WriteFrame(frame *camera.Frame) error {
 	// IR data (uint8)
 	copy(r.rawBuf[off:], frame.IR)
 	off += len(frame.IR)
-
-	// Metadata (uint16 LE)
-	for _, v := range frame.Metadata {
-		binary.LittleEndian.PutUint16(r.rawBuf[off:off+2], v)
-		off += 2
-	}
 
 	// Compress
 	r.compBuf.Reset()

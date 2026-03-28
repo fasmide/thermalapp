@@ -89,8 +89,7 @@ type App struct {
 	recorder  *recording.Recorder
 
 	// Shutter/NUC state (updated each frame)
-	shutterActive    bool
-	shutterCountdown uint16
+	shutterActive bool
 
 	// Playback state (non-nil when playing a recording)
 	player *recording.Player
@@ -143,7 +142,6 @@ func (a *App) UpdateFrame(frame *camera.Frame) {
 	rot := a.rotation
 	a.lastFrame = frame
 	a.shutterActive = frame.ShutterActive
-	a.shutterCountdown = frame.ShutterCountdown
 	rec := a.recorder
 	a.mu.Unlock()
 

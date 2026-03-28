@@ -23,7 +23,8 @@ type Frame struct {
 	// Dimensions: SensorH x SensorW.
 	IR []uint8
 
-	// Metadata holds the 2 raw metadata rows (preserved for future use).
+	// Metadata holds the 2 raw metadata rows (available during live capture;
+	// not stored in recordings).
 	Metadata []uint16
 
 	// Width and Height of the thermal/IR image.
@@ -33,10 +34,10 @@ type Frame struct {
 	// in progress). Frames with ShutterActive=true contain stale/invalid data.
 	ShutterActive bool
 
-	// ShutterCountdown is an approximate countdown to the next automatic shutter
-	// event, in the range [0, ~2300]. Derived from metadata register 72.
-	// When it reaches a low value the camera will auto-trigger NUC.
-	ShutterCountdown uint16
+	// HardwareFrameCounter is the camera's internal frame counter (metadata
+	// register 64). It freezes during NUC — that is how ShutterActive is
+	// determined.
+	HardwareFrameCounter uint16
 }
 
 // ToCelsius converts a raw uint16 thermal value to degrees Celsius.

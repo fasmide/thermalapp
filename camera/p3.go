@@ -237,9 +237,9 @@ func (c *P3Camera) ReadFrame() (*Frame, error) {
 
 	// Populate shutter state from metadata registers.
 	// Register 64 = camera frame counter, register 72 = shutter countdown.
-	if len(frame.Metadata) > 72 {
+	if len(frame.Metadata) > 64 {
 		frameCnt := frame.Metadata[64]
-		frame.ShutterCountdown = frame.Metadata[72]
+		frame.HardwareFrameCounter = frameCnt
 
 		if c.firstFrame {
 			c.firstFrame = false

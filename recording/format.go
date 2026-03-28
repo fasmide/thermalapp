@@ -4,7 +4,7 @@
 //
 //	Header (32 bytes):
 //	  [0:8]   Magic "THERMAP\x00"
-//	  [8:10]  Version uint16 LE (3)
+//	  [8:10]  Version uint16 LE (4)
 //	  [10:12] SensorWidth uint16 LE
 //	  [12:14] SensorHeight uint16 LE
 //	  [14:18] FrameCount uint32 LE (updated on close)
@@ -14,12 +14,11 @@
 //	Per frame (deflate compressed):
 //	  [0:4]   CompressedSize uint32 LE
 //	  [4:4+N] Deflate-compressed block containing:
-//	          [0:8]                    TimestampNs int64 LE (nanos since recording start)
-//	          [8]                      Flags uint8 (bit 0 = ShutterActive)
-//	          [9:11]                   ShutterCountdown uint16 LE
-//	          [11:11+W*H*2]            Thermal []uint16 LE
-//	          [11+W*H*2:11+W*H*3]     IR []uint8
-//	          [11+W*H*3:11+W*H*3+2*W*2] Metadata []uint16 LE (2 rows × W)
+//	          [0:8]                TimestampNs int64 LE (nanos since recording start)
+//	          [8]                  Flags uint8 (bit 0 = ShutterActive)
+//	          [9:11]              HardwareFrameCounter uint16 LE
+//	          [11:11+W*H*2]       Thermal []uint16 LE
+//	          [11+W*H*2:11+W*H*3] IR []uint8
 package recording
 
 import (
@@ -32,10 +31,9 @@ var magic = [8]byte{'T', 'H', 'E', 'R', 'M', 'A', 'P', 0}
 
 const (
 	headerSize         = 32
-	formatVersion      = 3
-	metadataRows       = 2
+	formatVersion      = 4
 	timestampSize      = 8
-	frameMetaSize      = 3 // 1 byte flags + 2 bytes ShutterCountdown
+	frameMetaSize      = 3 // 1 byte flags + 2 bytes HardwareFrameCounter
 	frameSizePrefixLen = 4
 )
 
@@ -52,8 +50,7 @@ func (h Header) frameDataSize() int {
 	w, ht := int(h.Width), int(h.Height)
 	thermal := w * ht * 2
 	ir := w * ht
-	meta := metadataRows * w * 2
-	return thermal + ir + meta
+	return thermal + ir
 }
 
 // framePayloadSize returns the uncompressed frame size including timestamp and frame metadata.
