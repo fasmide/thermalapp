@@ -23,18 +23,19 @@ import (
 // GraphWindow manages a separate window displaying a temperature graph for a Spot.
 type GraphWindow struct {
 	spot        *Spot
+	pixSrc      PixelQuerier
 	window      *app.Window
 	theme       *material.Theme
 	closed      bool
 	mu          sync.Mutex
 	epsDropdown *EmissivityDropdown
 	epsClick    widget.Clickable
+	renderMs    float64 // last frame render time in milliseconds
 }
 
 // NewGraphWindow creates and opens a new graph window for the given spot.
-// NewGraphWindow creates and opens a new graph window for the given spot.
 // Each graph window gets its own theme to avoid concurrent text shaper access.
-func NewGraphWindow(spot *Spot) *GraphWindow {
+func NewGraphWindow(spot *Spot, pixSrc PixelQuerier) *GraphWindow {
 	var w app.Window
 	w.Option(
 		app.Title(fmt.Sprintf("Spot %d — Temperature Graph", spot.Index)),
@@ -42,6 +43,7 @@ func NewGraphWindow(spot *Spot) *GraphWindow {
 	)
 	gw := &GraphWindow{
 		spot:        spot,
+		pixSrc:      pixSrc,
 		window:      &w,
 		theme:       material.NewTheme(),
 		epsDropdown: NewEmissivityDropdown(),
@@ -85,6 +87,20 @@ func (gw *GraphWindow) run() {
 }
 
 func (gw *GraphWindow) layoutGraph(gtx layout.Context) layout.Dimensions {
+	start := time.Now()
+	defer func() { gw.renderMs = float64(time.Since(start).Microseconds()) / 1000.0 }()
+
+	// Fetch graph data: buffer for cursor/user, spot ring buffer for min/max
+	var allSamples []Sample
+	switch gw.spot.Kind {
+	case SpotMin, SpotMax:
+		allSamples = gw.spot.History(0)
+	default:
+		x, y := gw.spot.GetPosition()
+		allSamples = gw.pixSrc.QueryPixel(int(x), int(y), 0)
+	}
+	st := ComputeStats(allSamples)
+
 	dims := layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 		// Title bar
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
@@ -101,7 +117,6 @@ func (gw *GraphWindow) layoutGraph(gtx layout.Context) layout.Dimensions {
 				kindStr = fmt.Sprintf("Point %d", spot.Index)
 			}
 
-			st := spot.Stats()
 			dur := st.Duration.Truncate(time.Second)
 
 			epsLabel := " e: global "
@@ -112,8 +127,9 @@ func (gw *GraphWindow) layoutGraph(gtx layout.Context) layout.Dimensions {
 			}
 
 			leftTitle := fmt.Sprintf("Spot %d (%s)  |", spot.Index, kindStr)
-			rightTitle := fmt.Sprintf("|  Now: %.1f°C  |  Min: %.1f  Max: %.1f  Mean: %.1f  s: %.2f  |  %d / %s",
-				st.Current, st.Min, st.Max, st.Mean, st.StdDev, st.Count, dur)
+			latencyMs := float64(time.Since(spot.LastMoveTime()).Microseconds()) / 1000.0
+			rightTitle := fmt.Sprintf("|  Now: %.1f°C  |  Min: %.1f  Max: %.1f  Mean: %.1f  s: %.2f  |  %d / %s  |  %.0fms  E2E %.0fms",
+				st.Current, st.Min, st.Max, st.Mean, st.StdDev, st.Count, dur, gw.renderMs, latencyMs)
 
 			lightGray := color.NRGBA{R: 220, G: 220, B: 220, A: 255}
 
@@ -164,7 +180,7 @@ func (gw *GraphWindow) layoutGraph(gtx layout.Context) layout.Dimensions {
 		}),
 		// Graph area
 		layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-			return gw.drawGraph(gtx)
+			return gw.drawGraph(gtx, allSamples)
 		}),
 	)
 
@@ -182,7 +198,7 @@ func (gw *GraphWindow) layoutGraph(gtx layout.Context) layout.Dimensions {
 	return dims
 }
 
-func (gw *GraphWindow) drawGraph(gtx layout.Context) layout.Dimensions {
+func (gw *GraphWindow) drawGraph(gtx layout.Context, allSamples []Sample) layout.Dimensions {
 	w := gtx.Constraints.Max.X
 	h := gtx.Constraints.Max.Y
 	if w < 10 || h < 10 {
@@ -199,8 +215,11 @@ func (gw *GraphWindow) drawGraph(gtx layout.Context) layout.Dimensions {
 		return layout.Dimensions{Size: image.Pt(w, h)}
 	}
 
-	// Get samples to display — up to graphW pixels worth
-	samples := gw.spot.History(graphW)
+	// Get samples to display — downsample to graphW points if needed
+	samples := allSamples
+	if len(samples) > graphW && graphW > 0 {
+		samples = downsample(allSamples, graphW)
+	}
 	if len(samples) < 2 {
 		s := op.Offset(image.Pt(w/2-30, h/2)).Push(gtx.Ops)
 		lbl := material.Body2(gw.theme, "Waiting for data...")
@@ -221,13 +240,13 @@ func (gw *GraphWindow) drawGraph(gtx layout.Context) layout.Dimensions {
 		}
 	}
 
-	// Add some padding to the range
+	// Add some padding to the range (minimum 3°C so noise doesn't dominate)
 	rangeT := maxT - minT
-	if rangeT < 0.5 {
-		rangeT = 0.5
+	if rangeT < 3.0 {
 		mid := (minT + maxT) / 2
-		minT = mid - rangeT/2
-		maxT = mid + rangeT/2
+		minT = mid - 1.5
+		maxT = mid + 1.5
+		rangeT = 3.0
 	} else {
 		pad := rangeT * 0.05
 		minT -= pad
@@ -302,4 +321,69 @@ func drawLine(gtx layout.Context, x0, y0, x1, y1 float32, col color.NRGBA) {
 		paint.Fill(gtx.Ops, col)
 		r.Pop()
 	}
+}
+
+// downsample reduces samples to n points using LTTB (Largest-Triangle-Three-Buckets)
+// which preserves the visual shape of the data much better than simple decimation.
+func downsample(data []Sample, n int) []Sample {
+	if n >= len(data) || n < 3 {
+		return data
+	}
+
+	out := make([]Sample, 0, n)
+	out = append(out, data[0]) // Always keep first
+
+	bucketSize := float64(len(data)-2) / float64(n-2)
+
+	a := 0 // Index of the previous selected point
+
+	for i := 1; i < n-1; i++ {
+		// Calculate the average of the next bucket (for the triangle)
+		avgStart := int(float64(i+1)*bucketSize) + 1
+		avgEnd := int(float64(i+2)*bucketSize) + 1
+		if avgEnd > len(data) {
+			avgEnd = len(data)
+		}
+		if avgStart >= avgEnd {
+			avgStart = avgEnd - 1
+		}
+		var avgX, avgY float64
+		for j := avgStart; j < avgEnd; j++ {
+			avgX += float64(j)
+			avgY += float64(data[j].Temp)
+		}
+		avgCount := float64(avgEnd - avgStart)
+		avgX /= avgCount
+		avgY /= avgCount
+
+		// Current bucket range
+		bStart := int(float64(i)*bucketSize) + 1
+		bEnd := int(float64(i+1)*bucketSize) + 1
+		if bEnd > len(data) {
+			bEnd = len(data)
+		}
+
+		// Find the point in this bucket that forms the largest triangle
+		// with the previous selected point and the next-bucket average
+		maxArea := -1.0
+		bestIdx := bStart
+		ax := float64(a)
+		ay := float64(data[a].Temp)
+
+		for j := bStart; j < bEnd; j++ {
+			// Triangle area (doubled, no abs needed for comparison)
+			area := math.Abs((ax-avgX)*(float64(data[j].Temp)-ay) -
+				(ax-float64(j))*(avgY-ay))
+			if area > maxArea {
+				maxArea = area
+				bestIdx = j
+			}
+		}
+
+		out = append(out, data[bestIdx])
+		a = bestIdx
+	}
+
+	out = append(out, data[len(data)-1]) // Always keep last
+	return out
 }

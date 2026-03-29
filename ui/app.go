@@ -10,6 +10,7 @@ import (
 	"math"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"gioui.org/app"
@@ -57,7 +58,7 @@ type App struct {
 	gainMode camera.GainMode
 
 	// EMA smoothing initialized flag
-	smInited bool
+	smInited atomic.Bool
 
 	// Rotation: 0=0°, 1=90°, 2=180°, 3=270°
 	rotation int
@@ -98,9 +99,18 @@ type App struct {
 	playPauseClick widget.Clickable
 	sliderTag      bool // event tag for the slider area
 	sliderDragging bool
+
+	// Backfill debounce: timer fires after slider drag stops
+	backfillTimer *time.Timer
+
+	// Frame buffer for temperature history graphs (live mode)
+	frameBuf *FrameBuffer
+
+	// Playback buffer for temperature history graphs (playback mode)
+	playBuf *PlaybackBuffer
 }
 
-func NewApp(cam camera.Camera) *App {
+func NewApp(cam camera.Camera, bufSize int64) *App {
 	size := cam.SensorSize()
 	var w app.Window
 	title := "P3 Thermal"
@@ -123,6 +133,7 @@ func NewApp(cam camera.Camera) *App {
 			NewSpot(2, SpotCursor, color.NRGBA{R: 180, G: 180, B: 180, A: 200}),
 		},
 		graphs:       make(map[int]*GraphWindow),
+		frameBuf:     NewFrameBuffer(size.X, size.Y, bufSize),
 		selectedSpot: -1,
 		epsDropdown:  NewEmissivityDropdown(),
 		showColorbar: true,
@@ -133,6 +144,8 @@ func NewApp(cam camera.Camera) *App {
 // SetPlayer configures the app for playback mode.
 func (a *App) SetPlayer(p *recording.Player) {
 	a.player = p
+	h := p.Header()
+	a.playBuf = NewPlaybackBuffer(int(h.Width), int(h.Height), int(p.FrameCount()), a.frameBuf.maxBytes)
 	a.Window.Option(app.Title(fmt.Sprintf("P3 Thermal — Playback (%d frames)", p.FrameCount())))
 }
 
@@ -160,13 +173,32 @@ func (a *App) UpdateFrame(frame *camera.Frame) {
 
 	imgW := result.RGBA.Bounds().Dx()
 
+	// Add to the appropriate buffer
+	if a.playBuf != nil {
+		// Playback mode: cache by frame index
+		frameIdx := a.player.FrameIndex() - 1
+		if frameIdx < 0 {
+			frameIdx = 0
+		}
+		if bw, bh := a.playBuf.Dims(); bw != imgW || bh != result.RGBA.Bounds().Dy() {
+			a.playBuf.Resize(imgW, result.RGBA.Bounds().Dy())
+		}
+		a.playBuf.Add(frameIdx, result.Celsius, a.player.FrameTime())
+	} else {
+		// Live mode: ring buffer
+		if bw, bh := a.frameBuf.Dims(); bw != imgW || bh != result.RGBA.Bounds().Dy() {
+			a.frameBuf.Resize(imgW, result.RGBA.Bounds().Dy())
+		}
+		a.frameBuf.Add(result.Celsius, time.Now())
+	}
+
 	// Update spot positions and record temperatures
 	const alpha = 0.15
 
 	// Spot 0: min
 	minSpot := a.spots[0]
 	newMinX, newMinY := float32(result.MinX), float32(result.MinY)
-	if !a.smInited {
+	if !a.smInited.Load() {
 		minSpot.SetPosition(newMinX, newMinY, true)
 	} else {
 		minSpot.UpdateEMA(newMinX, newMinY, alpha)
@@ -180,7 +212,7 @@ func (a *App) UpdateFrame(frame *camera.Frame) {
 	// Spot 1: max
 	maxSpot := a.spots[1]
 	newMaxX, newMaxY := float32(result.MaxX), float32(result.MaxY)
-	if !a.smInited {
+	if !a.smInited.Load() {
 		maxSpot.SetPosition(newMaxX, newMaxY, true)
 	} else {
 		maxSpot.UpdateEMA(newMaxX, newMaxY, alpha)
@@ -191,7 +223,7 @@ func (a *App) UpdateFrame(frame *camera.Frame) {
 		maxSpot.Record(result.Celsius[maxIdx])
 	}
 
-	a.smInited = true
+	a.smInited.Store(true)
 
 	// Spot 2: cursor — recorded in handlePointer, just read temp here if active
 	cursorSpot := a.spots[2]
@@ -199,7 +231,7 @@ func (a *App) UpdateFrame(frame *camera.Frame) {
 	if cs.Active {
 		cIdx := int(cs.Y)*imgW + int(cs.X)
 		if cIdx >= 0 && cIdx < len(result.Celsius) {
-			cursorSpot.Record(result.Celsius[cIdx])
+			cursorSpot.SetLastTemp(result.Celsius[cIdx])
 		}
 	}
 
@@ -213,7 +245,7 @@ func (a *App) UpdateFrame(frame *camera.Frame) {
 		idx := int(st.Y)*imgW + int(st.X)
 		if idx >= 0 && idx < len(result.Celsius) {
 			temp := sp.CorrectedTemp(result.Celsius[idx], result.GlobalEmissivity, result.AmbientC)
-			sp.Record(temp)
+			sp.SetLastTemp(temp)
 		}
 	}
 
@@ -260,9 +292,9 @@ func (a *App) refreshDisplay() {
 		}
 		if i >= 3 {
 			temp := sp.CorrectedTemp(result.Celsius[idx], result.GlobalEmissivity, result.AmbientC)
-			sp.Record(temp)
+			sp.SetLastTemp(temp)
 		} else {
-			sp.Record(result.Celsius[idx])
+			sp.SetLastTemp(result.Celsius[idx])
 		}
 	}
 
@@ -555,10 +587,17 @@ func (a *App) handlePointer(gtx layout.Context) {
 				imgW := r.RGBA.Bounds().Dx()
 				cIdx := imgY*imgW + imgX
 				if cIdx >= 0 && cIdx < len(r.Celsius) {
-					cursorSpot.Record(r.Celsius[cIdx])
+					cursorSpot.SetLastTemp(r.Celsius[cIdx])
 				}
 			} else {
 				cursorSpot.SetActive(false)
+			}
+			// Invalidate cursor graph so it rebuilds from buffer at new position
+			a.mu.Lock()
+			cursorGW := a.graphs[2]
+			a.mu.Unlock()
+			if cursorGW != nil && !cursorGW.IsClosed() {
+				cursorGW.Invalidate()
 			}
 		case pointer.Press:
 			// Map screen to image coords
@@ -904,8 +943,12 @@ func (a *App) toggleGraph(idx int) {
 		return
 	}
 
-	// Open new graph window
-	gw := NewGraphWindow(a.spots[idx])
+	// Open new graph window with the appropriate data source
+	var pixSrc PixelQuerier = a.frameBuf
+	if a.playBuf != nil {
+		pixSrc = a.playBuf
+	}
+	gw := NewGraphWindow(a.spots[idx], pixSrc)
 	a.graphs[idx] = gw
 }
 
@@ -1211,15 +1254,47 @@ func (a *App) seekToFrame(idx int) {
 	if a.player == nil {
 		return
 	}
+	// Cancel any running backfill immediately (non-blocking cancel + async wait)
+	if a.playBuf != nil {
+		a.playBuf.StopBackfill()
+		a.playBuf.Clear()
+	}
+	// Cancel any pending debounced backfill
+	if a.backfillTimer != nil {
+		a.backfillTimer.Stop()
+	}
+
 	frame, err := a.player.SeekTo(idx)
 	if err != nil {
 		log.Printf("seek: %v", err)
 		return
 	}
-	// Process and display the seeked frame
-	go func() {
-		a.UpdateFrame(frame)
-	}()
+	// Display the seeked frame immediately
+	go a.UpdateFrame(frame)
+
+	// Debounce backfill: wait 150ms after last seek before starting.
+	// This avoids spawning workers on every slider drag pixel.
+	if a.playBuf != nil {
+		a.backfillTimer = time.AfterFunc(150*time.Millisecond, func() {
+			a.mu.Lock()
+			params := a.params
+			rot := a.rotation
+			a.mu.Unlock()
+			a.playBuf.StartBackfill(a.player, idx, params, rot, a.invalidateGraphs)
+		})
+	}
+}
+
+// invalidateGraphs triggers a redraw of all open graph windows and the main window.
+func (a *App) invalidateGraphs() {
+	a.mu.Lock()
+	for _, gw := range a.graphs {
+		if !gw.IsClosed() {
+			gw.Invalidate()
+		}
+	}
+	a.mu.Unlock()
+	a.Window.Invalidate()
 }
 
 func (a *App) layoutStatus(gtx layout.Context, result *colorize.Result) layout.Dimensions {
@@ -1242,9 +1317,17 @@ func (a *App) layoutStatus(gtx layout.Context, result *colorize.Result) layout.D
 		recStr = fmt.Sprintf("  |  REC %d  %s", a.recorder.Frames(), humanSize(a.recorder.FileSize()))
 	}
 
+	// Buffer status
+	bufStr := ""
+	if a.playBuf != nil {
+		bufStr = fmt.Sprintf("  |  BUF %d/%d", a.playBuf.Len(), a.playBuf.MaxLen())
+	} else if a.frameBuf != nil {
+		bufStr = fmt.Sprintf("  |  BUF %d/%d", a.frameBuf.Len(), a.frameBuf.maxFrames)
+	}
+
 	leftStatus := fmt.Sprintf("[C] %-10s  |  [A] %-10s  |  [G] Gain: %-4s  |",
 		p.Palette, agcName(p.Mode), gainStr)
-	rightStatus := fmt.Sprintf("|  [R] %d\u00b0  |  [H] Help%s", a.rotation*90, recStr)
+	rightStatus := fmt.Sprintf("|  [R] %d\u00b0  |  [H] Help%s%s", a.rotation*90, recStr, bufStr)
 
 	lightGray := color.NRGBA{R: 220, G: 220, B: 220, A: 255}
 

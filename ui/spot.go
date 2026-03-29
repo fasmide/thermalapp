@@ -44,7 +44,13 @@ type Spot struct {
 	Emissivity    float32
 	EmissivityIdx int // index into colorize.EmissivityPresets, -1 = use global
 
-	// Ring buffer of temperature history
+	// Most recent temperature reading (label display)
+	lastTemp float32
+
+	// Timestamp of last position change (for latency measurement)
+	lastMove time.Time
+
+	// Ring buffer of temperature history (used by min/max spots)
 	hist    [historySize]Sample
 	head    int // next write position
 	count   int // number of valid samples (up to historySize)
@@ -89,6 +95,7 @@ func (s *Spot) SetPosition(x, y float32, active bool) {
 	s.X = x
 	s.Y = y
 	s.Active = active
+	s.lastMove = time.Now()
 	s.mu.Unlock()
 }
 
@@ -97,6 +104,13 @@ func (s *Spot) SetActive(active bool) {
 	s.mu.Lock()
 	s.Active = active
 	s.mu.Unlock()
+}
+
+// LastMoveTime returns when this spot's position last changed.
+func (s *Spot) LastMoveTime() time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastMove
 }
 
 // UpdateEMA applies exponential moving average to the position. Safe for concurrent use.
@@ -130,7 +144,8 @@ func (s *Spot) GetPosition() (float32, float32) {
 	return s.X, s.Y
 }
 
-// Record adds a temperature sample. Safe for concurrent use.
+// Record adds a temperature sample to the ring buffer and updates lastTemp.
+// Used by min/max spots which track moving positions. Safe for concurrent use.
 func (s *Spot) Record(temp float32) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -142,6 +157,15 @@ func (s *Spot) Record(temp float32) {
 		s.count++
 	}
 	s.lastAdd = now
+	s.lastTemp = temp
+}
+
+// SetLastTemp updates the most recent temperature without recording to history.
+// Used by cursor/user spots whose graphs are backed by the frame buffer.
+func (s *Spot) SetLastTemp(temp float32) {
+	s.mu.Lock()
+	s.lastTemp = temp
+	s.mu.Unlock()
 }
 
 // History returns up to the last n samples in chronological order.
@@ -173,15 +197,11 @@ func (s *Spot) Count() int {
 	return s.count
 }
 
-// LastTemp returns the most recent temperature, or 0 if no samples.
+// LastTemp returns the most recent temperature. Safe for concurrent use.
 func (s *Spot) LastTemp() float32 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.count == 0 {
-		return 0
-	}
-	idx := (s.head - 1 + historySize) % historySize
-	return s.hist[idx].Temp
+	return s.lastTemp
 }
 
 // SpotStats holds computed statistics for a spot's history.
@@ -256,4 +276,39 @@ func (s *Spot) CorrectedTemp(globalTemp, globalEps, ambientC float32) float32 {
 		raw = globalTemp*globalEps + (1-globalEps)*ambientC
 	}
 	return colorize.CorrectEmissivity(raw, ambientC, eps)
+}
+
+// ComputeStats computes statistics over a slice of samples.
+func ComputeStats(samples []Sample) SpotStats {
+	st := SpotStats{Count: len(samples)}
+	if len(samples) == 0 {
+		return st
+	}
+
+	st.Min = samples[0].Temp
+	st.Max = samples[0].Temp
+	st.Current = samples[len(samples)-1].Temp
+
+	var sum float64
+	for _, s := range samples {
+		if s.Temp < st.Min {
+			st.Min = s.Temp
+		}
+		if s.Temp > st.Max {
+			st.Max = s.Temp
+		}
+		sum += float64(s.Temp)
+	}
+	st.Mean = float32(sum / float64(len(samples)))
+
+	var variance float64
+	for _, s := range samples {
+		d := float64(s.Temp) - float64(st.Mean)
+		variance += d * d
+	}
+	st.StdDev = float32(math.Sqrt(variance / float64(len(samples))))
+
+	st.Duration = samples[len(samples)-1].Time.Sub(samples[0].Time)
+
+	return st
 }

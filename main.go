@@ -15,12 +15,15 @@ import (
 
 func main() {
 	playFile := flag.String("play", "", "play back a .tha recording file instead of connecting to camera")
+	bufSizeMB := flag.Int("bufsize", 500, "frame buffer size in megabytes for temperature history")
 	revMeta := flag.Bool("rev_meta", false, "dump frame metadata to terminal for reverse engineering")
 	revMeta2 := flag.Bool("rev_meta2", false, "compact metadata monitor: track key registers, one line per frame")
 	flag.Parse()
 
+	bufBytes := int64(*bufSizeMB) * 1024 * 1024
+
 	if *playFile != "" {
-		runPlayback(*playFile)
+		runPlayback(*playFile, bufBytes)
 		return
 	}
 
@@ -34,10 +37,10 @@ func main() {
 		return
 	}
 
-	runLive()
+	runLive(bufBytes)
 }
 
-func runLive() {
+func runLive(bufBytes int64) {
 	cam := camera.NewP3Camera()
 
 	log.Println("Connecting to P3 camera...")
@@ -59,7 +62,7 @@ func runLive() {
 		log.Fatalf("start streaming: %v", err)
 	}
 
-	a := ui.NewApp(cam)
+	a := ui.NewApp(cam, bufBytes)
 
 	// USB reader goroutine
 	go func() {
@@ -84,7 +87,7 @@ func runLive() {
 	app.Main()
 }
 
-func runPlayback(filename string) {
+func runPlayback(filename string, bufBytes int64) {
 	player, err := recording.NewPlayer(filename)
 	if err != nil {
 		log.Fatalf("open recording: %v", err)
@@ -94,7 +97,7 @@ func runPlayback(filename string) {
 	h := player.Header()
 	log.Printf("Playing %s: %dx%d, %d frames", filename, h.Width, h.Height, h.FrameCount)
 
-	a := ui.NewApp(player)
+	a := ui.NewApp(player, bufBytes)
 	a.SetPlayer(player)
 
 	// Frame reader goroutine (respects original timing)

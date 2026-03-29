@@ -10,6 +10,7 @@ import (
 	"log"
 	"os"
 	"sync"
+	"syscall"
 	"time"
 
 	"thermalapp/camera"
@@ -20,6 +21,7 @@ import (
 type Player struct {
 	mu       sync.Mutex
 	file     *os.File
+	mmap     []byte // memory-mapped file for lock-free random access
 	header   Header
 	frameBuf []byte // reusable decompressed frame payload buffer
 	frameIdx int    // current frame index (0-based)
@@ -59,6 +61,19 @@ func NewPlayer(filename string) (*Player, error) {
 		f.Close()
 		return nil, fmt.Errorf("build index: %w", err)
 	}
+
+	// Memory-map the file for lock-free random frame access
+	fi, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return nil, fmt.Errorf("stat recording: %w", err)
+	}
+	data, err := syscall.Mmap(int(f.Fd()), 0, int(fi.Size()), syscall.PROT_READ, syscall.MAP_PRIVATE)
+	if err != nil {
+		f.Close()
+		return nil, fmt.Errorf("mmap recording: %w", err)
+	}
+	p.mmap = data
 
 	return p, nil
 }
@@ -142,6 +157,10 @@ func (p *Player) StopStreaming() error { return nil }
 func (p *Player) Close() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.mmap != nil {
+		syscall.Munmap(p.mmap)
+		p.mmap = nil
+	}
 	if p.file != nil {
 		p.file.Close()
 		p.file = nil
@@ -348,4 +367,68 @@ func (p *Player) parseFrameData() *camera.Frame {
 		ShutterActive:        flags&0x01 != 0,
 		HardwareFrameCounter: hwFrameCnt,
 	}
+}
+
+// ReadFrameAt reads a specific frame by index independently of playback state.
+// Uses mmap for zero-copy access to compressed data — fully lock-free.
+// Multiple goroutines can call this concurrently.
+func (p *Player) ReadFrameAt(idx int) (*camera.Frame, time.Time, error) {
+	if idx < 0 || idx >= len(p.offsets) {
+		return nil, time.Time{}, fmt.Errorf("frame %d out of range (have %d)", idx, len(p.offsets))
+	}
+
+	mmap := p.mmap
+	if mmap == nil {
+		return nil, time.Time{}, fmt.Errorf("player closed")
+	}
+
+	off := p.offsets[idx]
+	if off+frameSizePrefixLen > int64(len(mmap)) {
+		return nil, time.Time{}, fmt.Errorf("frame %d: offset out of bounds", idx)
+	}
+	cSize := int64(binary.LittleEndian.Uint32(mmap[off : off+frameSizePrefixLen]))
+	dataStart := off + frameSizePrefixLen
+	dataEnd := dataStart + cSize
+	if dataEnd > int64(len(mmap)) {
+		return nil, time.Time{}, fmt.Errorf("frame %d: compressed data out of bounds", idx)
+	}
+	compressed := mmap[dataStart:dataEnd]
+
+	payloadSize := p.header.framePayloadSize()
+	w, h := int(p.header.Width), int(p.header.Height)
+
+	// Decompress (the expensive part — runs without any lock)
+	buf := make([]byte, payloadSize)
+	r := flate.NewReader(bytes.NewReader(compressed))
+	n, err := io.ReadFull(r, buf)
+	r.Close()
+	if err != nil && err != io.ErrUnexpectedEOF {
+		return nil, time.Time{}, fmt.Errorf("decompress frame %d: read %d bytes: %w", idx, n, err)
+	}
+
+	tsNs := int64(binary.LittleEndian.Uint64(buf[0:8]))
+	frameTime := time.Unix(0, p.header.StartTime+tsNs)
+
+	foff := timestampSize
+	flags := buf[foff]
+	foff++
+	hwFC := binary.LittleEndian.Uint16(buf[foff : foff+2])
+	foff += 2
+
+	thermal := make([]uint16, w*h)
+	for i := range thermal {
+		thermal[i] = binary.LittleEndian.Uint16(buf[foff : foff+2])
+		foff += 2
+	}
+	ir := make([]uint8, w*h)
+	copy(ir, buf[foff:foff+w*h])
+
+	return &camera.Frame{
+		Thermal:              thermal,
+		IR:                   ir,
+		Width:                w,
+		Height:               h,
+		ShutterActive:        flags&0x01 != 0,
+		HardwareFrameCounter: hwFC,
+	}, frameTime, nil
 }
