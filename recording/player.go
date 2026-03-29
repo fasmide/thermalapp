@@ -73,6 +73,9 @@ func NewPlayer(filename string) (*Player, error) {
 		f.Close()
 		return nil, fmt.Errorf("mmap recording: %w", err)
 	}
+	// Tell the kernel: random access pattern, and pages can be reclaimed freely.
+	_ = syscall.Madvise(data, syscall.MADV_RANDOM)
+	_ = syscall.Madvise(data, syscall.MADV_DONTNEED)
 	p.mmap = data
 
 	return p, nil
