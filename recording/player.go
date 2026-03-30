@@ -170,6 +170,18 @@ func (p *Player) Close() {
 	}
 }
 
+// ReleaseMmapPages advises the kernel that mmap pages are no longer needed
+// and can be reclaimed immediately. The mapping stays valid — pages will be
+// faulted back in from disk on next access.
+func (p *Player) ReleaseMmapPages() {
+	p.mu.Lock()
+	m := p.mmap
+	p.mu.Unlock()
+	if m != nil {
+		_ = syscall.Madvise(m, syscall.MADV_DONTNEED)
+	}
+}
+
 // TriggerShutter is a no-op for playback.
 func (p *Player) TriggerShutter() error { return nil }
 

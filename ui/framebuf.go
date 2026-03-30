@@ -345,6 +345,9 @@ func (pb *PlaybackBuffer) StartBackfill(player *recording.Player, upToIdx int, p
 }
 
 func (pb *PlaybackBuffer) runBackfill(ctx context.Context, player *recording.Player, upToIdx int, params colorize.Params, rotation int, invalidate func()) {
+	// Release mmap pages when backfill finishes (normal completion or cancellation)
+	defer player.ReleaseMmapPages()
+
 	// Build work list: frame indices to backfill (newest first, skip cached)
 	work := make([]int, 0, upToIdx)
 	pb.mu.RLock()
