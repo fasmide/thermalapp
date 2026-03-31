@@ -1,9 +1,13 @@
 package ui
 
 import (
+	"bufio"
 	"context"
+	"os"
 	"runtime"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -11,6 +15,29 @@ import (
 	"thermalapp/colorize"
 	"thermalapp/recording"
 )
+
+// availableMemoryBytes returns the available system memory in bytes.
+// Falls back to 0 if detection fails.
+func availableMemoryBytes() int64 {
+	f, err := os.Open("/proc/meminfo")
+	if err != nil {
+		return 0
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := sc.Text()
+		if strings.HasPrefix(line, "MemAvailable:") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 {
+				if kb, err := strconv.ParseInt(fields[1], 10, 64); err == nil {
+					return kb * 1024
+				}
+			}
+		}
+	}
+	return 0
+}
 
 // PixelQuerier provides historical temperature data at a pixel position.
 // Implemented by FrameBuffer (live) and PlaybackBuffer (recording playback).
@@ -28,14 +55,16 @@ type BufferedFrame struct {
 // It stores the colorized (global-emissivity-corrected) celsius values for each
 // frame, allowing historical pixel queries at arbitrary positions.
 type FrameBuffer struct {
-	mu        sync.RWMutex
-	frames    []BufferedFrame
-	head      int // next write position
-	count     int
-	maxFrames int
-	maxBytes  int64
-	width     int
-	height    int
+	mu             sync.RWMutex
+	frames         []BufferedFrame
+	head           int // next write position
+	count          int
+	maxFrames      int
+	maxBytes       int64
+	width          int
+	height         int
+	sampleInterval time.Duration // minimum interval between stored frames (0 = every frame)
+	lastAdd        time.Time     // time of last stored frame
 }
 
 // NewFrameBuffer creates a frame buffer sized to hold at most maxBytes of data.
@@ -58,14 +87,22 @@ func (fb *FrameBuffer) computeMax(width, height int) {
 
 // Add appends a celsius frame to the buffer. The celsius slice must have
 // len == width*height matching the buffer dimensions.
+// Frames arriving faster than the configured sample interval are silently dropped.
 func (fb *FrameBuffer) Add(celsius []float32, t time.Time) {
 	fb.mu.Lock()
 	defer fb.mu.Unlock()
+
+	// Throttle: skip frame if it's too soon since the last stored frame
+	if fb.sampleInterval > 0 && !fb.lastAdd.IsZero() && t.Sub(fb.lastAdd) < fb.sampleInterval {
+		return
+	}
 
 	expected := fb.width * fb.height
 	if len(celsius) != expected {
 		return
 	}
+
+	fb.lastAdd = t
 
 	f := &fb.frames[fb.head]
 	f.Time = t
@@ -116,6 +153,39 @@ func (fb *FrameBuffer) Resize(width, height int) {
 	fb.count = 0
 }
 
+// SetMaxBytes changes the memory cap and clears the buffer.
+func (fb *FrameBuffer) SetMaxBytes(maxBytes int64) {
+	fb.mu.Lock()
+	defer fb.mu.Unlock()
+	fb.maxBytes = maxBytes
+	fb.computeMax(fb.width, fb.height)
+	fb.frames = make([]BufferedFrame, fb.maxFrames)
+	fb.head = 0
+	fb.count = 0
+}
+
+// MaxBytes returns the current memory cap.
+func (fb *FrameBuffer) MaxBytes() int64 {
+	fb.mu.RLock()
+	defer fb.mu.RUnlock()
+	return fb.maxBytes
+}
+
+// SampleInterval returns the minimum interval between stored frames.
+func (fb *FrameBuffer) SampleInterval() time.Duration {
+	fb.mu.RLock()
+	defer fb.mu.RUnlock()
+	return fb.sampleInterval
+}
+
+// SetSampleInterval changes the minimum interval between stored frames.
+// A value of 0 means every frame is stored.
+func (fb *FrameBuffer) SetSampleInterval(d time.Duration) {
+	fb.mu.Lock()
+	defer fb.mu.Unlock()
+	fb.sampleInterval = d
+}
+
 // Dims returns the current buffer frame dimensions.
 func (fb *FrameBuffer) Dims() (int, int) {
 	fb.mu.RLock()
@@ -152,6 +222,7 @@ type PlaybackBuffer struct {
 	height     int
 	maxEntries int
 	currentIdx int // current playback frame index
+	sampleSkip int // store every Nth frame (0 or 1 = every frame)
 
 	// Backfill state
 	cancelBackfill context.CancelFunc
@@ -179,10 +250,15 @@ func NewPlaybackBuffer(width, height int, totalFrames int, maxBytes int64) *Play
 
 // Add caches the celsius frame at the given recording frame index and
 // updates the current playback position. Used by UpdateFrame during playback.
+// Respects sampleSkip: only frames aligned to the skip grid are stored.
 func (pb *PlaybackBuffer) Add(frameIdx int, celsius []float32, t time.Time) {
 	pb.mu.Lock()
 	defer pb.mu.Unlock()
 	pb.currentIdx = frameIdx
+	skip := pb.sampleSkip
+	if skip > 1 && frameIdx%skip != 0 {
+		return // not on the sample grid
+	}
 	pb.store(frameIdx, celsius, t)
 }
 
@@ -307,6 +383,33 @@ func (pb *PlaybackBuffer) MaxLen() int {
 	return pb.maxEntries
 }
 
+// SetMaxBytes changes the memory cap and clears the cache.
+func (pb *PlaybackBuffer) SetMaxBytes(maxBytes int64) {
+	pb.mu.Lock()
+	defer pb.mu.Unlock()
+	frameBytes := int64(pb.width*pb.height)*4 + 64
+	pb.maxEntries = int(maxBytes / frameBytes)
+	if pb.maxEntries < 1 {
+		pb.maxEntries = 1
+	}
+	pb.cache = make(map[int]*pbEntry, pb.maxEntries)
+}
+
+// SetSampleSkip sets the frame skip factor. 0 or 1 means every frame.
+// Higher values mean only every Nth frame is stored/backfilled.
+func (pb *PlaybackBuffer) SetSampleSkip(n int) {
+	pb.mu.Lock()
+	defer pb.mu.Unlock()
+	pb.sampleSkip = n
+}
+
+// SampleSkip returns the current skip factor.
+func (pb *PlaybackBuffer) SampleSkip() int {
+	pb.mu.RLock()
+	defer pb.mu.RUnlock()
+	return pb.sampleSkip
+}
+
 // StopBackfill cancels any running background backfill and waits for it to finish.
 func (pb *PlaybackBuffer) StopBackfill() {
 	pb.mu.Lock()
@@ -349,9 +452,14 @@ func (pb *PlaybackBuffer) runBackfill(ctx context.Context, player *recording.Pla
 	defer player.ReleaseMmapPages()
 
 	// Build work list: frame indices to backfill (newest first, skip cached)
+	// Respect sampleSkip: only include frames that align with the skip grid
 	work := make([]int, 0, upToIdx)
 	pb.mu.RLock()
-	for i := upToIdx - 1; i >= 0 && len(work) < pb.maxEntries; i-- {
+	skip := pb.sampleSkip
+	if skip < 1 {
+		skip = 1
+	}
+	for i := upToIdx - 1; i >= 0 && len(work) < pb.maxEntries; i -= skip {
 		if _, ok := pb.cache[i]; !ok {
 			work = append(work, i)
 		}

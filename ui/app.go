@@ -73,6 +73,10 @@ type App struct {
 	epsDropdown *EmissivityDropdown
 	epsClick    widget.Clickable
 
+	// Buffer settings panel
+	bufPanel *BufferPanel
+	bufClick widget.Clickable
+
 	// Toggles
 	showColorbar bool
 	showHelp     bool
@@ -136,6 +140,7 @@ func NewApp(cam camera.Camera, bufSize int64) *App {
 		frameBuf:     NewFrameBuffer(size.X, size.Y, bufSize),
 		selectedSpot: -1,
 		epsDropdown:  NewEmissivityDropdown(),
+		bufPanel:     NewBufferPanel(),
 		showColorbar: true,
 		showLabels:   true,
 	}
@@ -367,6 +372,8 @@ func (a *App) handleKeys(gtx layout.Context) {
 		case "Q", key.NameEscape:
 			if ke.Name == key.NameEscape && a.epsDropdown.IsOpen() {
 				a.epsDropdown.Close()
+			} else if ke.Name == key.NameEscape && a.bufPanel.IsOpen() {
+				a.bufPanel.Close()
 			} else if ke.Name == key.NameEscape && a.selectedSpot >= 0 {
 				a.selectedSpot = -1
 			} else {
@@ -743,6 +750,64 @@ func (a *App) doLayout(gtx layout.Context) layout.Dimensions {
 			a.toastExpiry = time.Now().Add(2 * time.Second)
 			a.mu.Unlock()
 			a.refreshDisplay()
+		}
+	}
+
+	// Buffer settings panel overlay
+	if a.bufPanel.IsOpen() {
+		curBytes := a.frameBuf.MaxBytes()
+		curInterval := a.frameBuf.SampleInterval()
+		w, h := a.frameBuf.Dims()
+		res := a.bufPanel.Layout(gtx, a.theme, curBytes, curInterval, 4, w*h)
+		if res.SizeChanged {
+			a.frameBuf.SetMaxBytes(res.NewBytes)
+			if a.playBuf != nil {
+				a.playBuf.StopBackfill()
+				a.playBuf.SetMaxBytes(res.NewBytes)
+				idx := a.player.FrameIndex()
+				a.mu.Lock()
+				params := a.params
+				rot := a.rotation
+				a.mu.Unlock()
+				a.playBuf.StartBackfill(a.player, idx, params, rot, a.invalidateGraphs)
+			}
+			a.mu.Lock()
+			a.toastMsg = fmt.Sprintf("Buffer resized to %s", humanSize(res.NewBytes))
+			a.toastExpiry = time.Now().Add(2 * time.Second)
+			a.mu.Unlock()
+		}
+		if res.IntervalChanged {
+			a.frameBuf.SetSampleInterval(res.NewInterval)
+			if a.playBuf != nil {
+				// Convert interval to frame skip (recording is ~25fps)
+				skip := 1
+				if res.NewInterval > 0 {
+					skip = int(res.NewInterval.Milliseconds() / 40) // 40ms per frame at 25fps
+					if skip < 1 {
+						skip = 1
+					}
+				}
+				a.playBuf.StopBackfill()
+				a.playBuf.SetSampleSkip(skip)
+				a.playBuf.Clear()
+				idx := a.player.FrameIndex()
+				a.mu.Lock()
+				params := a.params
+				rot := a.rotation
+				a.mu.Unlock()
+				a.playBuf.StartBackfill(a.player, idx, params, rot, a.invalidateGraphs)
+			}
+			label := "Max"
+			for _, p := range sampleRatePresets {
+				if p.Interval == res.NewInterval {
+					label = p.Label
+					break
+				}
+			}
+			a.mu.Lock()
+			a.toastMsg = fmt.Sprintf("Sample rate: %s", label)
+			a.toastExpiry = time.Now().Add(2 * time.Second)
+			a.mu.Unlock()
 		}
 	}
 
@@ -1317,17 +1382,22 @@ func (a *App) layoutStatus(gtx layout.Context, result *colorize.Result) layout.D
 		recStr = fmt.Sprintf("  |  REC %d  %s", a.recorder.Frames(), humanSize(a.recorder.FileSize()))
 	}
 
-	// Buffer status
-	bufStr := ""
+	// Buffer status — clickable button
+	bufLabel := ""
 	if a.playBuf != nil {
-		bufStr = fmt.Sprintf("  |  BUF %d/%d", a.playBuf.Len(), a.playBuf.MaxLen())
+		bufLabel = fmt.Sprintf(" BUF %d/%d ", a.playBuf.Len(), a.playBuf.MaxLen())
 	} else if a.frameBuf != nil {
-		bufStr = fmt.Sprintf("  |  BUF %d/%d", a.frameBuf.Len(), a.frameBuf.maxFrames)
+		bufLabel = fmt.Sprintf(" BUF %d/%d ", a.frameBuf.Len(), a.frameBuf.maxFrames)
+	}
+
+	// Handle buffer size button click
+	if a.bufClick.Clicked(gtx) {
+		a.bufPanel.Toggle()
 	}
 
 	leftStatus := fmt.Sprintf("[C] %-10s  |  [A] %-10s  |  [G] Gain: %-4s  |",
 		p.Palette, agcName(p.Mode), gainStr)
-	rightStatus := fmt.Sprintf("|  [R] %d\u00b0  |  [H] Help%s%s", a.rotation*90, recStr, bufStr)
+	rightStatus := fmt.Sprintf("|  [R] %d\u00b0  |  [H] Help%s", a.rotation*90, recStr)
 
 	lightGray := color.NRGBA{R: 220, G: 220, B: 220, A: 255}
 
@@ -1384,6 +1454,35 @@ func (a *App) layoutStatus(gtx layout.Context, result *colorize.Result) layout.D
 								lbl := material.Body2(a.theme, rightStatus)
 								lbl.Color = lightGray
 								return lbl.Layout(gtx)
+							}),
+							// Clickable buffer size button
+							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+								if bufLabel == "" {
+									return layout.Dimensions{}
+								}
+								return material.Clickable(gtx, &a.bufClick, func(gtx layout.Context) layout.Dimensions {
+									return layout.Background{}.Layout(gtx,
+										func(gtx layout.Context) layout.Dimensions {
+											bgCol := color.NRGBA{R: 50, G: 50, B: 50, A: 255}
+											if a.bufClick.Hovered() {
+												bgCol = color.NRGBA{R: 70, G: 70, B: 70, A: 255}
+											}
+											if a.bufPanel.IsOpen() {
+												bgCol = color.NRGBA{R: 60, G: 90, B: 160, A: 255}
+											}
+											defer clip.Rect{Max: gtx.Constraints.Min}.Push(gtx.Ops).Pop()
+											paint.Fill(gtx.Ops, bgCol)
+											return layout.Dimensions{Size: gtx.Constraints.Min}
+										},
+										func(gtx layout.Context) layout.Dimensions {
+											return layout.Inset{Left: unit.Dp(6), Right: unit.Dp(6), Top: unit.Dp(2), Bottom: unit.Dp(2)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+												lbl := material.Body2(a.theme, bufLabel)
+												lbl.Color = lightGray
+												return lbl.Layout(gtx)
+											})
+										},
+									)
+								})
 							}),
 						)
 					}),
