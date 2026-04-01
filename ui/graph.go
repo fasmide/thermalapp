@@ -146,29 +146,7 @@ func (gw *GraphWindow) layoutGraph(gtx layout.Context) layout.Dimensions {
 						return lbl.Layout(gtx)
 					}),
 					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						return material.Clickable(gtx, &gw.epsClick, func(gtx layout.Context) layout.Dimensions {
-							return layout.Background{}.Layout(gtx,
-								func(gtx layout.Context) layout.Dimensions {
-									bgCol := color.NRGBA{R: 50, G: 50, B: 50, A: 255}
-									if gw.epsClick.Hovered() {
-										bgCol = color.NRGBA{R: 70, G: 70, B: 70, A: 255}
-									}
-									if gw.epsDropdown.IsOpen() {
-										bgCol = color.NRGBA{R: 60, G: 90, B: 160, A: 255}
-									}
-									defer clip.Rect{Max: gtx.Constraints.Min}.Push(gtx.Ops).Pop()
-									paint.Fill(gtx.Ops, bgCol)
-									return layout.Dimensions{Size: gtx.Constraints.Min}
-								},
-								func(gtx layout.Context) layout.Dimensions {
-									return layout.Inset{Left: unit.Dp(6), Right: unit.Dp(6), Top: unit.Dp(2), Bottom: unit.Dp(2)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-										lbl := material.Body2(gw.theme, epsLabel)
-										lbl.Color = lightGray
-										return lbl.Layout(gtx)
-									})
-								},
-							)
-						})
+						return dropdownButton(gtx, gw.theme, &gw.epsClick, gw.epsDropdown.IsOpen(), epsLabel)
 					}),
 					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 						lbl := material.Body2(gw.theme, rightTitle)

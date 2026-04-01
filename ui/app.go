@@ -1425,29 +1425,7 @@ func (a *App) layoutStatus(gtx layout.Context, result *colorize.Result) layout.D
 							}),
 							// Clickable emissivity button
 							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-								return material.Clickable(gtx, &a.epsClick, func(gtx layout.Context) layout.Dimensions {
-									return layout.Background{}.Layout(gtx,
-										func(gtx layout.Context) layout.Dimensions {
-											bgCol := color.NRGBA{R: 50, G: 50, B: 50, A: 255}
-											if a.epsClick.Hovered() {
-												bgCol = color.NRGBA{R: 70, G: 70, B: 70, A: 255}
-											}
-											if a.epsDropdown.IsOpen() {
-												bgCol = color.NRGBA{R: 60, G: 90, B: 160, A: 255}
-											}
-											defer clip.Rect{Max: gtx.Constraints.Min}.Push(gtx.Ops).Pop()
-											paint.Fill(gtx.Ops, bgCol)
-											return layout.Dimensions{Size: gtx.Constraints.Min}
-										},
-										func(gtx layout.Context) layout.Dimensions {
-											return layout.Inset{Left: unit.Dp(6), Right: unit.Dp(6), Top: unit.Dp(2), Bottom: unit.Dp(2)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-												lbl := material.Body2(a.theme, epsLabel)
-												lbl.Color = lightGray
-												return lbl.Layout(gtx)
-											})
-										},
-									)
-								})
+								return dropdownButton(gtx, a.theme, &a.epsClick, a.epsDropdown.IsOpen(), epsLabel)
 							}),
 							// Right section
 							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
@@ -1460,29 +1438,7 @@ func (a *App) layoutStatus(gtx layout.Context, result *colorize.Result) layout.D
 								if bufLabel == "" {
 									return layout.Dimensions{}
 								}
-								return material.Clickable(gtx, &a.bufClick, func(gtx layout.Context) layout.Dimensions {
-									return layout.Background{}.Layout(gtx,
-										func(gtx layout.Context) layout.Dimensions {
-											bgCol := color.NRGBA{R: 50, G: 50, B: 50, A: 255}
-											if a.bufClick.Hovered() {
-												bgCol = color.NRGBA{R: 70, G: 70, B: 70, A: 255}
-											}
-											if a.bufPanel.IsOpen() {
-												bgCol = color.NRGBA{R: 60, G: 90, B: 160, A: 255}
-											}
-											defer clip.Rect{Max: gtx.Constraints.Min}.Push(gtx.Ops).Pop()
-											paint.Fill(gtx.Ops, bgCol)
-											return layout.Dimensions{Size: gtx.Constraints.Min}
-										},
-										func(gtx layout.Context) layout.Dimensions {
-											return layout.Inset{Left: unit.Dp(6), Right: unit.Dp(6), Top: unit.Dp(2), Bottom: unit.Dp(2)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-												lbl := material.Body2(a.theme, bufLabel)
-												lbl.Color = lightGray
-												return lbl.Layout(gtx)
-											})
-										},
-									)
-								})
+								return dropdownButton(gtx, a.theme, &a.bufClick, a.bufPanel.IsOpen(), bufLabel)
 							}),
 						)
 					}),

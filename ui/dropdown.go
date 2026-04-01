@@ -22,6 +22,35 @@ import (
 	"thermalapp/colorize"
 )
 
+// dropdownButton renders a small clickable pill button used to open dropdowns
+// in the status bar. It highlights on hover and turns blue when isOpen is true.
+func dropdownButton(gtx layout.Context, th *material.Theme, click *widget.Clickable, isOpen bool, label string) layout.Dimensions {
+	lightGray := color.NRGBA{R: 220, G: 220, B: 220, A: 255}
+	return material.Clickable(gtx, click, func(gtx layout.Context) layout.Dimensions {
+		return layout.Background{}.Layout(gtx,
+			func(gtx layout.Context) layout.Dimensions {
+				bgCol := color.NRGBA{R: 50, G: 50, B: 50, A: 255}
+				if click.Hovered() {
+					bgCol = color.NRGBA{R: 70, G: 70, B: 70, A: 255}
+				}
+				if isOpen {
+					bgCol = color.NRGBA{R: 60, G: 90, B: 160, A: 255}
+				}
+				defer clip.Rect{Max: gtx.Constraints.Min}.Push(gtx.Ops).Pop()
+				paint.Fill(gtx.Ops, bgCol)
+				return layout.Dimensions{Size: gtx.Constraints.Min}
+			},
+			func(gtx layout.Context) layout.Dimensions {
+				return layout.Inset{Left: unit.Dp(6), Right: unit.Dp(6), Top: unit.Dp(2), Bottom: unit.Dp(2)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+					lbl := material.Body2(th, label)
+					lbl.Color = lightGray
+					return lbl.Layout(gtx)
+				})
+			},
+		)
+	})
+}
+
 // dropdownRow is either a category header or a preset item.
 type dropdownRow struct {
 	isHeader    bool
