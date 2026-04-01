@@ -147,9 +147,15 @@ func (c *P3Camera) StartStreaming() error {
 	if err := c.sendCommand(commands["start_stream"]); err != nil {
 		return fmt.Errorf("start_stream cmd: %w", err)
 	}
-	c.readStatus()
-	c.readResponse(1)
-	c.readStatus()
+	if _, err := c.readStatus(); err != nil {
+		return fmt.Errorf("start_stream status 1: %w", err)
+	}
+	if _, err := c.readResponse(1); err != nil {
+		return fmt.Errorf("start_stream response: %w", err)
+	}
+	if _, err := c.readStatus(); err != nil {
+		return fmt.Errorf("start_stream status 2: %w", err)
+	}
 
 	time.Sleep(1 * time.Second)
 
@@ -180,15 +186,23 @@ func (c *P3Camera) StartStreaming() error {
 
 	// Attempt initial bulk read (may timeout — expected)
 	tmpBuf := make([]byte, p3FrameSize)
-	c.ep.Read(tmpBuf)
+	if _, err := c.ep.Read(tmpBuf); err != nil {
+		log.Printf("initial bulk read (expected timeout): %v", err)
+	}
 
 	// Final start_stream command
 	if err := c.sendCommand(commands["start_stream"]); err != nil {
 		return fmt.Errorf("final start_stream: %w", err)
 	}
-	c.readStatus()
-	c.readResponse(1)
-	c.readStatus()
+	if _, err := c.readStatus(); err != nil {
+		return fmt.Errorf("final start_stream status 1: %w", err)
+	}
+	if _, err := c.readResponse(1); err != nil {
+		return fmt.Errorf("final start_stream response: %w", err)
+	}
+	if _, err := c.readStatus(); err != nil {
+		return fmt.Errorf("final start_stream status 2: %w", err)
+	}
 
 	c.streaming = true
 	return nil
@@ -271,7 +285,9 @@ func (c *P3Camera) StopStreaming() error {
 
 func (c *P3Camera) Close() {
 	if c.streaming {
-		c.StopStreaming()
+		if err := c.StopStreaming(); err != nil {
+			log.Printf("stop streaming on close: %v", err)
+		}
 	}
 	if c.intf1 != nil {
 		c.intf1.Close()
@@ -294,7 +310,9 @@ func (c *P3Camera) TriggerShutter() error {
 	if err := c.sendCommand(commands["shutter"]); err != nil {
 		return fmt.Errorf("shutter cmd: %w", err)
 	}
-	c.readStatus()
+	if _, err := c.readStatus(); err != nil {
+		return fmt.Errorf("shutter status: %w", err)
+	}
 	return nil
 }
 
@@ -312,7 +330,9 @@ func (c *P3Camera) SetGain(mode GainMode) error {
 	if err := c.sendCommand(cmd); err != nil {
 		return fmt.Errorf("gain cmd: %w", err)
 	}
-	c.readStatus()
+	if _, err := c.readStatus(); err != nil {
+		return fmt.Errorf("gain status: %w", err)
+	}
 	c.gainMode = mode
 	return nil
 }

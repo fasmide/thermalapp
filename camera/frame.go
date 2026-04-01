@@ -17,11 +17,6 @@ const (
 	// Frame data size in bytes (excluding markers)
 	p3FrameSize = 2 * p3FrameRows * p3SensorW // 197,632
 
-	// Sync byte values for frame markers
-	syncStartEven = 0x8C
-	syncStartOdd  = 0x8D
-	syncEndEven   = 0x8E
-	syncEndOdd    = 0x8F
 )
 
 // frameMarker represents the 12-byte start/end frame marker.
@@ -41,10 +36,6 @@ func parseMarker(data []byte) frameMarker {
 		Cnt2:   binary.LittleEndian.Uint32(data[6:10]),
 		Cnt3:   binary.LittleEndian.Uint16(data[10:12]),
 	}
-}
-
-func (m frameMarker) isStart() bool {
-	return m.Sync == syncStartEven || m.Sync == syncStartOdd
 }
 
 // ParseP3Frame parses raw USB frame data (start marker + pixel data) into a Frame.

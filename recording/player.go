@@ -161,7 +161,9 @@ func (p *Player) Close() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.mmap != nil {
-		syscall.Munmap(p.mmap)
+		if err := syscall.Munmap(p.mmap); err != nil {
+			log.Printf("munmap: %v", err)
+		}
 		p.mmap = nil
 	}
 	if p.file != nil {
@@ -372,7 +374,6 @@ func (p *Player) parseFrameData() *camera.Frame {
 
 	ir := make([]uint8, w*h)
 	copy(ir, p.frameBuf[off:off+w*h])
-	off += w * h
 
 	return &camera.Frame{
 		Thermal:              thermal,
