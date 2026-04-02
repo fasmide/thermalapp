@@ -37,8 +37,8 @@ const (
 	graphCenterDiv      = 2      // divisor for centering labels horizontally/vertically
 	graphAxisLabelXOff  = 2      // x offset for Y-axis temperature labels from left edge
 	graphAxisLabelYAdj  = 6      // y pixel upward adjustment for Y-axis temperature labels
-	drawLineMinLength  = 0.5 // minimum line length (px) before drawLine is a no-op
-	drawLinePixelSize  = 2   // pixel width/height of each segment in drawLine
+	drawLineMinLength   = 0.5    // minimum line length (px) before drawLine is a no-op
+	drawLinePixelSize   = 2      // pixel width/height of each segment in drawLine
 
 	// LTTB downsampling algorithm constants.
 	lttbBoundaryPoints = 2 // number of fixed boundary points (first + last) in LTTB
