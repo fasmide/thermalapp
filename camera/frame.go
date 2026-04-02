@@ -57,7 +57,7 @@ func ParseP3Frame(data []byte) (*Frame, error) {
 	// Parse IR brightness: rows 0..191, low byte of each uint16
 	irCount := p3SensorH * p3SensorW
 	frame.IR = make([]uint8, irCount)
-	for i := 0; i < irCount; i++ {
+	for i := range irCount {
 		// Each pixel is 2 bytes LE; IR brightness is the low byte
 		frame.IR[i] = pixels[i*2]
 	}
@@ -66,7 +66,7 @@ func ParseP3Frame(data []byte) (*Frame, error) {
 	metaOffset := p3SensorH * p3SensorW * 2
 	metaCount := 2 * p3SensorW
 	frame.Metadata = make([]uint16, metaCount)
-	for i := 0; i < metaCount; i++ {
+	for i := range metaCount {
 		off := metaOffset + i*2
 		frame.Metadata[i] = binary.LittleEndian.Uint16(pixels[off : off+2])
 	}
@@ -75,7 +75,7 @@ func ParseP3Frame(data []byte) (*Frame, error) {
 	thermalOffset := (p3SensorH + 2) * p3SensorW * 2
 	thermalCount := p3SensorH * p3SensorW
 	frame.Thermal = make([]uint16, thermalCount)
-	for i := 0; i < thermalCount; i++ {
+	for i := range thermalCount {
 		off := thermalOffset + i*2
 		frame.Thermal[i] = binary.LittleEndian.Uint16(pixels[off : off+2])
 	}

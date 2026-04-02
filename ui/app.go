@@ -122,6 +122,7 @@ func NewApp(cam camera.Camera, bufSize int64) *App {
 		app.Title(title),
 		app.Size(unit.Dp(float32(size.X*3)), unit.Dp(float32(size.Y*3+80))),
 	)
+
 	return &App{
 		Window: &w,
 		theme:  material.NewTheme(),
@@ -624,10 +625,11 @@ func (a *App) handlePointer(gtx layout.Context) {
 						spX, spY := a.spots[i].GetPosition()
 						dx := int(spX) - imgX
 						dy := int(spY) - imgY
-						if dx*dx+dy*dy < 25 {
-							found = i
-							break
-						}
+					if dx*dx+dy*dy < 25 {
+						found = i
+
+						break
+					}
 					}
 					if found >= 0 {
 						if a.selectedSpot == found {
@@ -673,9 +675,10 @@ func (a *App) handlePointer(gtx layout.Context) {
 									newGraphs[j] = gw
 								}
 							}
-							a.graphs = newGraphs
-							removed = true
-							break
+						a.graphs = newGraphs
+						removed = true
+
+						break
 						}
 					}
 					if !removed {
@@ -801,6 +804,7 @@ func (a *App) doLayout(gtx layout.Context) layout.Dimensions {
 			for _, p := range sampleRatePresets {
 				if p.Interval == res.NewInterval {
 					label = p.Label
+
 					break
 				}
 			}
@@ -974,6 +978,7 @@ func (a *App) drawSpotLabel(gtx layout.Context, sx, sy int, index int, temp floa
 	dims := layout.Inset{Left: unit.Dp(3), Right: unit.Dp(3), Top: unit.Dp(1), Bottom: unit.Dp(1)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 		lbl := material.Caption(a.theme, txt)
 		lbl.Color = color.NRGBA{R: 255, G: 255, B: 255, A: 255}
+
 		return lbl.Layout(gtx)
 	})
 	call := macro.Stop()
@@ -1005,6 +1010,7 @@ func (a *App) toggleGraph(idx int) {
 		gw.window.Perform(system.ActionClose)
 		gw.mu.Unlock()
 		delete(a.graphs, idx)
+
 		return
 	}
 
@@ -1027,6 +1033,7 @@ func (a *App) drawTempLabel(gtx layout.Context, sx, sy int, temp float32, col co
 	dims := layout.Inset{Left: unit.Dp(3), Right: unit.Dp(3), Top: unit.Dp(1), Bottom: unit.Dp(1)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 		lbl := material.Caption(a.theme, txt)
 		lbl.Color = color.NRGBA{R: 255, G: 255, B: 255, A: 255}
+
 		return lbl.Layout(gtx)
 	})
 	call := macro.Stop()
@@ -1053,6 +1060,7 @@ func (a *App) drawNUCIndicator(gtx layout.Context, rightX, topY int) {
 		lbl := material.Body1(a.theme, "NUC")
 		lbl.Color = color.NRGBA{R: 255, G: 255, B: 255, A: 255}
 		lbl.Font.Weight = font.Bold
+
 		return lbl.Layout(gtx)
 	})
 	call := macro.Stop()
@@ -1152,6 +1160,7 @@ func (a *App) layoutPlaybackBar(gtx layout.Context) layout.Dimensions {
 		func(gtx layout.Context) layout.Dimensions {
 			defer clip.Rect{Max: gtx.Constraints.Min}.Push(gtx.Ops).Pop()
 			paint.Fill(gtx.Ops, bgColor)
+
 			return layout.Dimensions{Size: gtx.Constraints.Min}
 		},
 		func(gtx layout.Context) layout.Dimensions {
@@ -1162,30 +1171,34 @@ func (a *App) layoutPlaybackBar(gtx layout.Context) layout.Dimensions {
 						if a.playPauseClick.Clicked(gtx) {
 							player.SetPaused(!paused)
 						}
+
 						return material.Clickable(gtx, &a.playPauseClick, func(gtx layout.Context) layout.Dimensions {
-							btnBg := color.NRGBA{R: 50, G: 50, B: 50, A: 255}
-							if a.playPauseClick.Hovered() {
-								btnBg = color.NRGBA{R: 70, G: 70, B: 70, A: 255}
-							}
-							return layout.Background{}.Layout(gtx,
-								func(gtx layout.Context) layout.Dimensions {
-									defer clip.Rect{Max: gtx.Constraints.Min}.Push(gtx.Ops).Pop()
-									paint.Fill(gtx.Ops, btnBg)
-									return layout.Dimensions{Size: gtx.Constraints.Min}
-								},
-								func(gtx layout.Context) layout.Dimensions {
-									return layout.Inset{Left: unit.Dp(8), Right: unit.Dp(8), Top: unit.Dp(2), Bottom: unit.Dp(2)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-										txt := "PLAY"
-										if !paused {
-											txt = "PAUS"
-										}
-										lbl := material.Body2(a.theme, txt)
-										lbl.Color = lightGray
-										lbl.Font.Weight = font.Bold
-										return lbl.Layout(gtx)
-									})
-								},
-							)
+						btnBg := color.NRGBA{R: 50, G: 50, B: 50, A: 255}
+						if a.playPauseClick.Hovered() {
+							btnBg = color.NRGBA{R: 70, G: 70, B: 70, A: 255}
+						}
+
+						return layout.Background{}.Layout(gtx,
+							func(gtx layout.Context) layout.Dimensions {
+								defer clip.Rect{Max: gtx.Constraints.Min}.Push(gtx.Ops).Pop()
+								paint.Fill(gtx.Ops, btnBg)
+
+								return layout.Dimensions{Size: gtx.Constraints.Min}
+							},
+							func(gtx layout.Context) layout.Dimensions {
+								return layout.Inset{Left: unit.Dp(8), Right: unit.Dp(8), Top: unit.Dp(2), Bottom: unit.Dp(2)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+									txt := "PLAY"
+									if !paused {
+										txt = "PAUS"
+									}
+									lbl := material.Body2(a.theme, txt)
+									lbl.Color = lightGray
+									lbl.Font.Weight = font.Bold
+
+									return lbl.Layout(gtx)
+								})
+							},
+						)
 						})
 					}),
 					// Slider (Flexed — left edge anchored next to button)
@@ -1197,9 +1210,10 @@ func (a *App) layoutPlaybackBar(gtx layout.Context) layout.Dimensions {
 						return layout.Inset{Left: unit.Dp(6), Right: unit.Dp(4)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 							ft := player.FrameTime()
 							txt := fmt.Sprintf("%d/%d  %s", current, total, ft.Format("2006-01-02 15:04:05"))
-							lbl := material.Body2(a.theme, txt)
-							lbl.Color = lightGray
-							return lbl.Layout(gtx)
+						lbl := material.Body2(a.theme, txt)
+						lbl.Color = lightGray
+
+						return lbl.Layout(gtx)
 						})
 					}),
 				)
@@ -1208,7 +1222,7 @@ func (a *App) layoutPlaybackBar(gtx layout.Context) layout.Dimensions {
 	)
 }
 
-func (a *App) layoutSlider(gtx layout.Context, current, total, barH int) layout.Dimensions {
+func (a *App) layoutSlider(gtx layout.Context, current, total, _ int) layout.Dimensions {
 	sliderH := gtx.Dp(unit.Dp(12))
 	trackH := gtx.Dp(unit.Dp(4))
 	w := gtx.Constraints.Max.X
@@ -1312,6 +1326,7 @@ func (a *App) sliderPosToFrame(x float32, width float32, total int) int {
 	if idx >= total {
 		idx = total - 1
 	}
+
 	return idx
 }
 
@@ -1332,8 +1347,10 @@ func (a *App) seekToFrame(idx int) {
 	frame, err := a.player.SeekTo(idx)
 	if err != nil {
 		log.Printf("seek: %v", err)
+
 		return
 	}
+
 	// Display the seeked frame immediately
 	go a.UpdateFrame(frame)
 
@@ -1362,7 +1379,7 @@ func (a *App) invalidateGraphs() {
 	a.Window.Invalidate()
 }
 
-func (a *App) layoutStatus(gtx layout.Context, result *colorize.Result) layout.Dimensions {
+func (a *App) layoutStatus(gtx layout.Context, _ *colorize.Result) layout.Dimensions {
 	a.mu.Lock()
 	p := a.params
 	eIdx := a.emissivityIdx
@@ -1410,6 +1427,7 @@ func (a *App) layoutStatus(gtx layout.Context, result *colorize.Result) layout.D
 		func(gtx layout.Context) layout.Dimensions {
 			defer clip.Rect{Max: gtx.Constraints.Min}.Push(gtx.Ops).Pop()
 			paint.Fill(gtx.Ops, color.NRGBA{R: 30, G: 30, B: 30, A: 255})
+
 			return layout.Dimensions{Size: gtx.Constraints.Min}
 		},
 		func(gtx layout.Context) layout.Dimensions {
@@ -1418,27 +1436,30 @@ func (a *App) layoutStatus(gtx layout.Context, result *colorize.Result) layout.D
 					layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
 						return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle, Spacing: layout.SpaceSides}.Layout(gtx,
 							// Left section
-							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-								lbl := material.Body2(a.theme, leftStatus)
-								lbl.Color = lightGray
-								return lbl.Layout(gtx)
-							}),
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							lbl := material.Body2(a.theme, leftStatus)
+							lbl.Color = lightGray
+
+							return lbl.Layout(gtx)
+						}),
 							// Clickable emissivity button
 							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 								return dropdownButton(gtx, a.theme, &a.epsClick, a.epsDropdown.IsOpen(), epsLabel)
 							}),
 							// Right section
-							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-								lbl := material.Body2(a.theme, rightStatus)
-								lbl.Color = lightGray
-								return lbl.Layout(gtx)
-							}),
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							lbl := material.Body2(a.theme, rightStatus)
+							lbl.Color = lightGray
+
+							return lbl.Layout(gtx)
+						}),
 							// Clickable buffer size button
 							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-								if bufLabel == "" {
-									return layout.Dimensions{}
-								}
-								return dropdownButton(gtx, a.theme, &a.bufClick, a.bufPanel.IsOpen(), bufLabel)
+						if bufLabel == "" {
+								return layout.Dimensions{}
+							}
+
+							return dropdownButton(gtx, a.theme, &a.bufClick, a.bufPanel.IsOpen(), bufLabel)
 							}),
 						)
 					}),
@@ -1507,7 +1528,6 @@ func (a *App) layoutHelp(gtx layout.Context) {
 	}
 
 	for i, sec := range sections {
-		sec := sec
 		isFirst := i == 0
 		children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 			topPad := unit.Dp(10)
@@ -1518,24 +1538,26 @@ func (a *App) layoutHelp(gtx layout.Context) {
 				lbl := material.Body2(a.theme, sec.title)
 				lbl.Color = dimGray
 				lbl.Font.Weight = font.Bold
+
 				return lbl.Layout(gtx)
 			})
 		}))
 		for _, r := range sec.rows {
-			r := r
 			children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 				return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
 					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 						gtx.Constraints.Min.X = keyW
 						gtx.Constraints.Max.X = keyW
-						lbl := material.Body2(a.theme, r.key)
-						lbl.Color = lightGray
-						return lbl.Layout(gtx)
+					lbl := material.Body2(a.theme, r.key)
+					lbl.Color = lightGray
+
+					return lbl.Layout(gtx)
 					}),
 					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						lbl := material.Body2(a.theme, r.desc)
-						lbl.Color = lightGray
-						return lbl.Layout(gtx)
+					lbl := material.Body2(a.theme, r.desc)
+					lbl.Color = lightGray
+
+					return lbl.Layout(gtx)
 					}),
 				)
 			}))
@@ -1566,6 +1588,7 @@ func (a *App) layoutToast(gtx layout.Context, msg string) {
 	dims := layout.UniformInset(unit.Dp(10)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 		lbl := material.Body2(a.theme, msg)
 		lbl.Color = color.NRGBA{R: 220, G: 220, B: 220, A: 255}
+
 		return lbl.Layout(gtx)
 	})
 	call := macro.Stop()
@@ -1589,6 +1612,7 @@ func agcName(m colorize.AGCMode) string {
 	case colorize.AGCFixed:
 		return "Fixed"
 	}
+
 	return "?"
 }
 
@@ -1618,11 +1642,13 @@ func (a *App) saveScreenshot(img *image.RGBA) {
 	f, err := os.Create(name)
 	if err != nil {
 		log.Printf("screenshot: %v", err)
+
 		return
 	}
 	defer f.Close()
 	if err := png.Encode(f, img); err != nil {
 		log.Printf("screenshot encode: %v", err)
+
 		return
 	}
 	log.Printf("saved screenshot: %s", name)
@@ -1638,6 +1664,7 @@ func (a *App) dumpFrame(frame *camera.Frame) {
 	name := fmt.Sprintf("thermal_%s.tha", time.Now().Format("20060102_150405"))
 	if err := recording.DumpFrame(name, frame); err != nil {
 		log.Printf("frame dump: %v", err)
+
 		return
 	}
 	log.Printf("dumped raw frame: %s", name)
@@ -1662,6 +1689,7 @@ func (a *App) toggleRecording() {
 		a.recorder = nil
 		a.toastMsg = fmt.Sprintf("Recording stopped (%d frames)", frames)
 		a.toastExpiry = time.Now().Add(3 * time.Second)
+
 		return
 	}
 
@@ -1673,6 +1701,7 @@ func (a *App) toggleRecording() {
 		log.Printf("start recording: %v", err)
 		a.toastMsg = fmt.Sprintf("Recording failed: %v", err)
 		a.toastExpiry = time.Now().Add(3 * time.Second)
+
 		return
 	}
 	a.recorder = rec

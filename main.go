@@ -24,16 +24,19 @@ func main() {
 
 	if *playFile != "" {
 		runPlayback(*playFile, bufBytes)
+
 		return
 	}
 
 	if *revMeta2 {
 		runRevMeta2()
+
 		return
 	}
 
 	if *revMeta {
 		runRevMeta()
+
 		return
 	}
 
@@ -47,11 +50,11 @@ func runLive(bufBytes int64) {
 	if err := cam.Connect(); err != nil {
 		log.Fatalf("connect: %v", err)
 	}
-	defer cam.Close()
 
 	log.Println("Initializing...")
 	info, err := cam.Init()
 	if err != nil {
+		cam.Close()
 		log.Fatalf("init: %v", err)
 	}
 	log.Printf("Camera: %s  FW: %s  HW: %s  Serial: %s",
@@ -59,8 +62,10 @@ func runLive(bufBytes int64) {
 
 	log.Println("Starting stream...")
 	if err := cam.StartStreaming(); err != nil {
+		cam.Close()
 		log.Fatalf("start streaming: %v", err)
 	}
+	defer cam.Close()
 
 	a := ui.NewApp(cam, bufBytes)
 
@@ -70,6 +75,7 @@ func runLive(bufBytes int64) {
 			frame, err := cam.ReadFrame()
 			if err != nil {
 				log.Printf("read frame: %v", err)
+
 				continue
 			}
 			a.UpdateFrame(frame)
@@ -129,17 +135,19 @@ func runRevMeta() {
 	if err := cam.Connect(); err != nil {
 		log.Fatalf("connect: %v", err)
 	}
-	defer cam.Close()
 
 	log.Println("Initializing...")
 	if _, err := cam.Init(); err != nil {
+		cam.Close()
 		log.Fatalf("init: %v", err)
 	}
 
 	log.Println("Starting stream...")
 	if err := cam.StartStreaming(); err != nil {
+		cam.Close()
 		log.Fatalf("start streaming: %v", err)
 	}
+	defer cam.Close()
 
 	log.Println("Streaming metadata (Ctrl-C to stop)...")
 	log.Println("Format: [row col / flat_idx] old -> new (hex). Only changed values shown.")
@@ -152,6 +160,7 @@ func runRevMeta() {
 		frame, err := cam.ReadFrame()
 		if err != nil {
 			log.Printf("read frame: %v", err)
+
 			continue
 		}
 		frameNum++
@@ -174,10 +183,11 @@ func runRevMeta() {
 					fmt.Println()
 				}
 			}
-			prev = make([]uint16, len(meta))
-			copy(prev, meta)
-			continue
-		}
+		prev = make([]uint16, len(meta))
+		copy(prev, meta)
+
+		continue
+	}
 
 		// Print only changes
 		changed := 0
@@ -207,17 +217,19 @@ func runRevMeta2() {
 	if err := cam.Connect(); err != nil {
 		log.Fatalf("connect: %v", err)
 	}
-	defer cam.Close()
 
 	log.Println("Initializing...")
 	if _, err := cam.Init(); err != nil {
+		cam.Close()
 		log.Fatalf("init: %v", err)
 	}
 
 	log.Println("Starting stream...")
 	if err := cam.StartStreaming(); err != nil {
+		cam.Close()
 		log.Fatalf("start streaming: %v", err)
 	}
+	defer cam.Close()
 
 	// Registers of interest (row 0 only)
 	type reg struct {
@@ -262,6 +274,7 @@ func runRevMeta2() {
 		frame, err := cam.ReadFrame()
 		if err != nil {
 			log.Printf("read frame: %v", err)
+
 			continue
 		}
 		frameNum++
@@ -273,6 +286,7 @@ func runRevMeta2() {
 			for _, r := range regs {
 				if r.idx < len(meta) && r.idx < len(prev) && meta[r.idx] != prev[r.idx] {
 					anyChange = true
+
 					break
 				}
 			}
@@ -285,10 +299,11 @@ func runRevMeta2() {
 				if i < len(prev) && meta[i] != prev[i] {
 					tracked := false
 					for _, r := range regs {
-						if r.idx == i {
-							tracked = true
-							break
-						}
+					if r.idx == i {
+						tracked = true
+
+						break
+					}
 					}
 					if !tracked {
 						extraChanges++

@@ -58,16 +58,19 @@ func (c *P3Camera) Connect() error {
 		// Find bus/address for a helpful error message
 		hint := usbDevPath()
 		c.ctx.Close()
+
 		return fmt.Errorf("open P3 device: %w%s", err, hint)
 	}
 	if dev == nil {
 		c.ctx.Close()
+
 		return fmt.Errorf("P3 camera not found (VID=%04x PID=%04x)", p3VID, p3PID)
 	}
 
 	if err := dev.SetAutoDetach(true); err != nil {
 		dev.Close()
 		c.ctx.Close()
+
 		return fmt.Errorf("set auto-detach: %w", err)
 	}
 
@@ -77,6 +80,7 @@ func (c *P3Camera) Connect() error {
 	if err != nil {
 		dev.Close()
 		c.ctx.Close()
+
 		return fmt.Errorf("get config 1: %w", err)
 	}
 	c.cfg = cfg
@@ -87,6 +91,7 @@ func (c *P3Camera) Connect() error {
 		cfg.Close()
 		dev.Close()
 		c.ctx.Close()
+
 		return fmt.Errorf("claim interface 0: %w", err)
 	}
 	c.intf0 = intf0
@@ -98,11 +103,13 @@ func (c *P3Camera) Connect() error {
 		cfg.Close()
 		dev.Close()
 		c.ctx.Close()
+
 		return fmt.Errorf("claim interface 1: %w", err)
 	}
 	c.intf1 = intf1
 
 	c.frameBuf = make([]byte, p3FrameSize+2*markerSize)
+
 	return nil
 }
 
@@ -205,6 +212,7 @@ func (c *P3Camera) StartStreaming() error {
 	}
 
 	c.streaming = true
+
 	return nil
 }
 
@@ -230,6 +238,7 @@ func (c *P3Camera) ReadFrame() (*Frame, error) {
 		if (n == markerSize && nextPos < totalSize) || (nextPos >= totalSize && n != markerSize) {
 			pos = 0
 			log.Println("frame sync: dropping, resetting")
+
 			continue
 		}
 
@@ -280,6 +289,7 @@ func (c *P3Camera) StopStreaming() error {
 	c.intf1 = intf1
 	c.ep = nil
 	c.streaming = false
+
 	return nil
 }
 
@@ -313,6 +323,7 @@ func (c *P3Camera) TriggerShutter() error {
 	if _, err := c.readStatus(); err != nil {
 		return fmt.Errorf("shutter status: %w", err)
 	}
+
 	return nil
 }
 
@@ -334,6 +345,7 @@ func (c *P3Camera) SetGain(mode GainMode) error {
 		return fmt.Errorf("gain status: %w", err)
 	}
 	c.gainMode = mode
+
 	return nil
 }
 
@@ -346,6 +358,7 @@ func (c *P3Camera) sendCommand(cmd []byte) error {
 		0, 0,
 		cmd,
 	)
+
 	return err
 }
 
@@ -355,12 +368,14 @@ func (c *P3Camera) readResponse(length int) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	return buf[:n], nil
 }
 
 func (c *P3Camera) readStatus() (byte, error) {
 	buf := make([]byte, 1)
 	_, err := c.dev.Control(0xC1, 0x22, 0, 0, buf)
+
 	return buf[0], err
 }
 
@@ -378,6 +393,7 @@ func (c *P3Camera) readRegister(cmdName string, length int) ([]byte, error) {
 	if _, err := c.readStatus(); err != nil {
 		return nil, err
 	}
+
 	return data, nil
 }
 
@@ -385,6 +401,7 @@ func trimNull(b []byte) string {
 	if i := bytes.IndexByte(b, 0); i >= 0 {
 		return string(b[:i])
 	}
+
 	return string(b)
 }
 
@@ -410,5 +427,6 @@ func usbDevPath() string {
 			}
 		}
 	}
+
 	return ""
 }

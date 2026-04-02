@@ -27,6 +27,7 @@ func hexBytes(s string) []byte {
 	for i := 0; i < len(s); i += 2 {
 		b[i/2] = hexNibble(s[i])<<4 | hexNibble(s[i+1])
 	}
+
 	return b
 }
 

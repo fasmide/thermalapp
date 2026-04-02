@@ -80,6 +80,7 @@ type SpotState struct {
 func (s *Spot) GetState() SpotState {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
 	return SpotState{
 		X:             s.X,
 		Y:             s.Y,
@@ -110,6 +111,7 @@ func (s *Spot) SetActive(active bool) {
 func (s *Spot) LastMoveTime() time.Time {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
 	return s.lastMove
 }
 
@@ -134,6 +136,7 @@ func (s *Spot) SetEmissivity(eps float32, idx int) {
 func (s *Spot) GetEmissivity() (float32, int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
 	return s.Emissivity, s.EmissivityIdx
 }
 
@@ -141,6 +144,7 @@ func (s *Spot) GetEmissivity() (float32, int) {
 func (s *Spot) GetPosition() (float32, float32) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
 	return s.X, s.Y
 }
 
@@ -184,9 +188,10 @@ func (s *Spot) History(n int) []Sample {
 
 	out := make([]Sample, n)
 	start := (s.head - n + historySize) % historySize
-	for i := 0; i < n; i++ {
+	for i := range n {
 		out[i] = s.hist[(start+i)%historySize]
 	}
+
 	return out
 }
 
@@ -194,6 +199,7 @@ func (s *Spot) History(n int) []Sample {
 func (s *Spot) Count() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
 	return s.count
 }
 
@@ -201,6 +207,7 @@ func (s *Spot) Count() int {
 func (s *Spot) LastTemp() float32 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
 	return s.lastTemp
 }
 
@@ -230,7 +237,7 @@ func (s *Spot) Stats() SpotStats {
 	st.Current = s.hist[(s.head-1+historySize)%historySize].Temp
 
 	var sum float64
-	for i := 0; i < s.count; i++ {
+	for i := range s.count {
 		t := s.hist[(start+i)%historySize].Temp
 		if t < st.Min {
 			st.Min = t
@@ -244,7 +251,7 @@ func (s *Spot) Stats() SpotStats {
 
 	// Standard deviation
 	var variance float64
-	for i := 0; i < s.count; i++ {
+	for i := range s.count {
 		t := float64(s.hist[(start+i)%historySize].Temp)
 		d := t - float64(st.Mean)
 		variance += d * d
@@ -275,6 +282,7 @@ func (s *Spot) CorrectedTemp(globalTemp, globalEps, ambientC float32) float32 {
 	if globalEps > 0 && globalEps < 1.0 {
 		raw = globalTemp*globalEps + (1-globalEps)*ambientC
 	}
+
 	return colorize.CorrectEmissivity(raw, ambientC, eps)
 }
 

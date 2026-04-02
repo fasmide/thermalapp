@@ -74,7 +74,7 @@ var JetLUT [256][3]uint8
 var GrayscaleLUT [256][3]uint8
 
 func init() {
-	for i := 0; i < 256; i++ {
+	for i := range 256 {
 		t := float64(i) / 255.0
 
 		// Iron/Hot colormap
@@ -91,7 +91,7 @@ func init() {
 		IronLUT[i] = [3]uint8{uint8(r * 255), uint8(g * 255), uint8(b * 255)}
 	}
 
-	for i := 0; i < 256; i++ {
+	for i := range 256 {
 		t := float64(i) / 255.0
 		var r, g, b float64
 		if t < 0.125 {
@@ -112,7 +112,7 @@ func init() {
 		}
 	}
 
-	for i := 0; i < 256; i++ {
+	for i := range 256 {
 		GrayscaleLUT[i] = [3]uint8{uint8(i), uint8(i), uint8(i)}
 	}
 }
@@ -124,5 +124,6 @@ func clampF(v, lo, hi float64) float64 {
 	if v > hi {
 		return hi
 	}
+
 	return v
 }

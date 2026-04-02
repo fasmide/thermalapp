@@ -102,6 +102,7 @@ func CorrectEmissivity(tMeasured, tReflected, emissivity float32) float32 {
 	if emissivity >= 1.0 {
 		return tMeasured // no correction needed
 	}
+
 	return (tMeasured - (1-emissivity)*tReflected) / emissivity
 }
 
@@ -127,5 +128,6 @@ func EstimateAmbient(celsius []float32) float32 {
 		sum += float64(celsius[i])
 		count++
 	}
+
 	return float32(sum / float64(count))
 }

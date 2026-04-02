@@ -33,9 +33,10 @@ func availableMemoryBytes() int64 {
 				if kb, err := strconv.ParseInt(fields[1], 10, 64); err == nil {
 					return kb * 1024
 				}
-			}
-		}
 	}
+	}
+	}
+
 	return 0
 }
 
@@ -72,6 +73,7 @@ func NewFrameBuffer(width, height int, maxBytes int64) *FrameBuffer {
 	fb := &FrameBuffer{maxBytes: maxBytes}
 	fb.computeMax(width, height)
 	fb.frames = make([]BufferedFrame, fb.maxFrames)
+
 	return fb
 }
 
@@ -136,10 +138,11 @@ func (fb *FrameBuffer) QueryPixel(x, y, n int) []Sample {
 	out := make([]Sample, n)
 	start := (fb.head - n + fb.maxFrames) % fb.maxFrames
 
-	for i := 0; i < n; i++ {
+	for i := range n {
 		f := &fb.frames[(start+i)%fb.maxFrames]
 		out[i] = Sample{Time: f.Time, Temp: f.Celsius[pixIdx]}
 	}
+
 	return out
 }
 
@@ -168,6 +171,7 @@ func (fb *FrameBuffer) SetMaxBytes(maxBytes int64) {
 func (fb *FrameBuffer) MaxBytes() int64 {
 	fb.mu.RLock()
 	defer fb.mu.RUnlock()
+
 	return fb.maxBytes
 }
 
@@ -175,6 +179,7 @@ func (fb *FrameBuffer) MaxBytes() int64 {
 func (fb *FrameBuffer) SampleInterval() time.Duration {
 	fb.mu.RLock()
 	defer fb.mu.RUnlock()
+
 	return fb.sampleInterval
 }
 
@@ -190,6 +195,7 @@ func (fb *FrameBuffer) SetSampleInterval(d time.Duration) {
 func (fb *FrameBuffer) Dims() (int, int) {
 	fb.mu.RLock()
 	defer fb.mu.RUnlock()
+
 	return fb.width, fb.height
 }
 
@@ -197,6 +203,7 @@ func (fb *FrameBuffer) Dims() (int, int) {
 func (fb *FrameBuffer) Len() int {
 	fb.mu.RLock()
 	defer fb.mu.RUnlock()
+
 	return fb.count
 }
 
@@ -240,6 +247,7 @@ func NewPlaybackBuffer(width, height int, totalFrames int, maxBytes int64) *Play
 	if maxEntries > totalFrames {
 		maxEntries = totalFrames
 	}
+
 	return &PlaybackBuffer{
 		cache:      make(map[int]*pbEntry, maxEntries),
 		width:      width,
@@ -336,6 +344,7 @@ func (pb *PlaybackBuffer) QueryPixel(x, y, n int) []Sample {
 		e := pb.cache[idx]
 		out[i] = Sample{Time: e.time, Temp: e.celsius[pixIdx]}
 	}
+
 	return out
 }
 
@@ -343,6 +352,7 @@ func (pb *PlaybackBuffer) QueryPixel(x, y, n int) []Sample {
 func (pb *PlaybackBuffer) Dims() (int, int) {
 	pb.mu.RLock()
 	defer pb.mu.RUnlock()
+
 	return pb.width, pb.height
 }
 
@@ -373,6 +383,7 @@ func (pb *PlaybackBuffer) Clear() {
 func (pb *PlaybackBuffer) Len() int {
 	pb.mu.RLock()
 	defer pb.mu.RUnlock()
+
 	return len(pb.cache)
 }
 
@@ -380,6 +391,7 @@ func (pb *PlaybackBuffer) Len() int {
 func (pb *PlaybackBuffer) MaxLen() int {
 	pb.mu.RLock()
 	defer pb.mu.RUnlock()
+
 	return pb.maxEntries
 }
 
@@ -407,6 +419,7 @@ func (pb *PlaybackBuffer) SetSampleSkip(n int) {
 func (pb *PlaybackBuffer) SampleSkip() int {
 	pb.mu.RLock()
 	defer pb.mu.RUnlock()
+
 	return pb.sampleSkip
 }
 
@@ -479,7 +492,7 @@ func (pb *PlaybackBuffer) runBackfill(ctx context.Context, player *recording.Pla
 	var loaded atomic.Int64
 	var wg sync.WaitGroup
 
-	for w := 0; w < workers; w++ {
+	for range workers {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()

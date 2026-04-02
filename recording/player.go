@@ -47,6 +47,7 @@ func NewPlayer(filename string) (*Player, error) {
 	h, err := readHeader(f)
 	if err != nil {
 		f.Close()
+
 		return nil, err
 	}
 
@@ -59,6 +60,7 @@ func NewPlayer(filename string) (*Player, error) {
 
 	if err := p.buildIndex(); err != nil {
 		f.Close()
+
 		return nil, fmt.Errorf("build index: %w", err)
 	}
 
@@ -66,11 +68,13 @@ func NewPlayer(filename string) (*Player, error) {
 	fi, err := f.Stat()
 	if err != nil {
 		f.Close()
+
 		return nil, fmt.Errorf("stat recording: %w", err)
 	}
 	data, err := syscall.Mmap(int(f.Fd()), 0, int(fi.Size()), syscall.PROT_READ, syscall.MAP_PRIVATE)
 	if err != nil {
 		f.Close()
+
 		return nil, fmt.Errorf("mmap recording: %w", err)
 	}
 	// Tell the kernel: random access pattern, and pages can be reclaimed freely.
@@ -112,6 +116,7 @@ func (p *Player) buildIndex() error {
 	if _, err := p.file.Seek(headerSize, 0); err != nil {
 		return err
 	}
+
 	return nil
 }
 
@@ -129,6 +134,7 @@ func (p *Player) FrameCount() uint32 {
 func (p *Player) FrameIndex() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+
 	return p.frameIdx
 }
 
@@ -136,6 +142,7 @@ func (p *Player) FrameIndex() int {
 func (p *Player) FrameTime() time.Time {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+
 	return time.Unix(0, p.header.StartTime+p.frameTsNs)
 }
 
@@ -188,7 +195,7 @@ func (p *Player) ReleaseMmapPages() {
 func (p *Player) TriggerShutter() error { return nil }
 
 // SetGain is a no-op for playback.
-func (p *Player) SetGain(mode camera.GainMode) error { return nil }
+func (p *Player) SetGain(_ camera.GainMode) error { return nil }
 
 // SensorSize returns the recording's sensor dimensions.
 func (p *Player) SensorSize() image.Point {
@@ -209,6 +216,7 @@ func (p *Player) SetPaused(paused bool) {
 func (p *Player) IsPaused() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+
 	return p.paused
 }
 
@@ -250,6 +258,7 @@ func (p *Player) ReadFrame() (*camera.Frame, error) {
 
 	if paused {
 		time.Sleep(50 * time.Millisecond)
+
 		return nil, fmt.Errorf("paused")
 	}
 
@@ -286,6 +295,7 @@ func (p *Player) ReadFrame() (*camera.Frame, error) {
 
 	frame := p.parseFrameData()
 	p.frameIdx++
+
 	return frame, nil
 }
 
@@ -337,6 +347,7 @@ func (p *Player) readFrameAt(idx int) error {
 		return fmt.Errorf("decompress frame %d: %w", idx, err)
 	}
 	p.frameTsNs = int64(binary.LittleEndian.Uint64(p.frameBuf[0:8]))
+
 	return nil
 }
 
@@ -348,6 +359,7 @@ func (p *Player) inflate(compressed []byte) error {
 	if err != nil && err != io.ErrUnexpectedEOF {
 		return fmt.Errorf("inflate: read %d bytes: %w", n, err)
 	}
+
 	return nil
 }
 
@@ -367,7 +379,7 @@ func (p *Player) parseFrameData() *camera.Frame {
 
 	thermalCount := w * h
 	thermal := make([]uint16, thermalCount)
-	for i := 0; i < thermalCount; i++ {
+	for i := range thermalCount {
 		thermal[i] = binary.LittleEndian.Uint16(p.frameBuf[off : off+2])
 		off += 2
 	}

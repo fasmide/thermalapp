@@ -45,6 +45,7 @@ func NewRecorder(filename string, sensorW, sensorH int) (*Recorder, error) {
 	if err := writeHeader(f, h); err != nil {
 		f.Close()
 		os.Remove(filename)
+
 		return nil, err
 	}
 
@@ -61,6 +62,7 @@ func NewRecorder(filename string, sensorW, sensorH int) (*Recorder, error) {
 	if err != nil {
 		f.Close()
 		os.Remove(filename)
+
 		return nil, fmt.Errorf("create deflater: %w", err)
 	}
 
@@ -128,6 +130,7 @@ func (r *Recorder) WriteFrame(frame *camera.Frame) error {
 
 	r.bytesWritten += int64(frameSizePrefixLen) + int64(r.compBuf.Len())
 	r.frames++
+
 	return nil
 }
 
@@ -153,6 +156,7 @@ func (r *Recorder) Close() error {
 	err := r.file.Close()
 	r.file = nil
 	log.Printf("recording closed: %d frames", r.frames)
+
 	return err
 }
 
@@ -160,6 +164,7 @@ func (r *Recorder) Close() error {
 func (r *Recorder) Frames() uint32 {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
 	return r.frames
 }
 
@@ -167,6 +172,7 @@ func (r *Recorder) Frames() uint32 {
 func (r *Recorder) FileSize() int64 {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
 	return r.bytesWritten
 }
 
@@ -178,7 +184,9 @@ func DumpFrame(filename string, frame *camera.Frame) error {
 	}
 	if err := rec.WriteFrame(frame); err != nil {
 		rec.Close()
+
 		return err
 	}
+
 	return rec.Close()
 }

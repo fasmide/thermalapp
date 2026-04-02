@@ -49,6 +49,7 @@ func NewGraphWindow(spot *Spot, pixSrc PixelQuerier) *GraphWindow {
 		epsDropdown: NewEmissivityDropdown(),
 	}
 	go gw.run()
+
 	return gw
 }
 
@@ -56,6 +57,7 @@ func NewGraphWindow(spot *Spot, pixSrc PixelQuerier) *GraphWindow {
 func (gw *GraphWindow) IsClosed() bool {
 	gw.mu.Lock()
 	defer gw.mu.Unlock()
+
 	return gw.closed
 }
 
@@ -76,6 +78,7 @@ func (gw *GraphWindow) run() {
 			gw.mu.Lock()
 			gw.closed = true
 			gw.mu.Unlock()
+
 			return
 		case app.FrameEvent:
 			gtx := app.NewContext(&ops, e)
@@ -140,19 +143,21 @@ func (gw *GraphWindow) layoutGraph(gtx layout.Context) layout.Dimensions {
 
 			return layout.UniformInset(unit.Dp(4)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 				return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
-					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						lbl := material.Body2(gw.theme, leftTitle)
-						lbl.Color = lightGray
-						return lbl.Layout(gtx)
-					}),
-					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						return dropdownButton(gtx, gw.theme, &gw.epsClick, gw.epsDropdown.IsOpen(), epsLabel)
-					}),
-					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						lbl := material.Body2(gw.theme, rightTitle)
-						lbl.Color = lightGray
-						return lbl.Layout(gtx)
-					}),
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					lbl := material.Body2(gw.theme, leftTitle)
+					lbl.Color = lightGray
+
+					return lbl.Layout(gtx)
+				}),
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					return dropdownButton(gtx, gw.theme, &gw.epsClick, gw.epsDropdown.IsOpen(), epsLabel)
+				}),
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					lbl := material.Body2(gw.theme, rightTitle)
+					lbl.Color = lightGray
+
+					return lbl.Layout(gtx)
+				}),
 				)
 			})
 		}),
@@ -204,6 +209,7 @@ func (gw *GraphWindow) drawGraph(gtx layout.Context, allSamples []Sample) layout
 		lbl.Color = color.NRGBA{R: 150, G: 150, B: 150, A: 255}
 		lbl.Layout(gtx)
 		s.Pop()
+
 		return layout.Dimensions{Size: image.Pt(w, h)}
 	}
 
@@ -291,7 +297,7 @@ func drawLine(gtx layout.Context, x0, y0, x1, y1 float32, col color.NRGBA) {
 
 	// Draw as a series of small rectangles along the line
 	steps := int(length) + 1
-	for s := 0; s < steps; s++ {
+	for s := range steps {
 		t := float32(s) / float32(steps)
 		px := int(x0 + dx*t)
 		py := int(y0 + dy*t)
@@ -363,5 +369,6 @@ func downsample(data []Sample, n int) []Sample {
 	}
 
 	out = append(out, data[len(data)-1]) // Always keep last
+
 	return out
 }

@@ -87,8 +87,8 @@ func Colorize(frame *camera.Frame, params Params) *Result {
 
 	if params.Mode == AGCHardware {
 		// Use the IR brightness plane directly
-		for y := 0; y < h; y++ {
-			for x := 0; x < w; x++ {
+		for y := range h {
+			for x := range w {
 				idx := y*w + x
 				v := frame.IR[idx]
 				c := lut[v]
@@ -126,6 +126,7 @@ func Colorize(frame *camera.Frame, params Params) *Result {
 				}
 			}
 		}
+
 		return result
 	}
 
@@ -177,8 +178,8 @@ func Colorize(frame *camera.Frame, params Params) *Result {
 	}
 
 	span := high - low
-	for y := 0; y < h; y++ {
-		for x := 0; x < w; x++ {
+	for y := range h {
+		for x := range w {
 			idx := y*w + x
 			norm := (celsius[idx] - low) / span
 			if norm < 0 {
@@ -209,6 +210,7 @@ func percentileBounds(data []float32, pLow, pHigh float64) (float32, float32) {
 
 	lo := sorted[int(math.Floor(pLow/100*float64(n-1)))]
 	hi := sorted[int(math.Ceil(pHigh/100*float64(n-1)))]
+
 	return lo, hi
 }
 
@@ -216,12 +218,13 @@ func percentileBounds(data []float32, pLow, pHigh float64) (float32, float32) {
 func MakeColorbar(p Palette, h int) *image.RGBA {
 	lut := p.LUT()
 	img := image.NewRGBA(image.Rect(0, 0, 256, h))
-	for x := 0; x < 256; x++ {
+	for x := range 256 {
 		c := lut[x]
-		for y := 0; y < h; y++ {
+		for y := range h {
 			img.SetRGBA(x, y, color.RGBA{c[0], c[1], c[2], 255})
 		}
 	}
+
 	return img
 }
 
@@ -229,7 +232,7 @@ func MakeColorbar(p Palette, h int) *image.RGBA {
 // The RGBA image, Celsius array, dimensions, and min/max coordinates are all
 // transformed so that downstream code can treat the result as an upright image.
 func (r *Result) Rotate(steps int) *Result {
-	steps = steps % 4
+	steps %= 4
 	if steps == 0 || r.RGBA == nil {
 		return r
 	}
@@ -247,8 +250,8 @@ func (r *Result) Rotate(steps int) *Result {
 	dst := image.NewRGBA(image.Rect(0, 0, dstW, dstH))
 	celsius := make([]float32, len(r.Celsius))
 
-	for sy := 0; sy < srcH; sy++ {
-		for sx := 0; sx < srcW; sx++ {
+	for sy := range srcH {
+		for sx := range srcW {
 			var dx, dy int
 			switch steps {
 			case 1: // 90° CW
@@ -277,6 +280,7 @@ func (r *Result) Rotate(steps int) *Result {
 		case 3:
 			return y
 		}
+
 		return x
 	}
 	rotY := func(x, y int) int {
@@ -288,6 +292,7 @@ func (r *Result) Rotate(steps int) *Result {
 		case 3:
 			return srcW - 1 - x
 		}
+
 		return y
 	}
 

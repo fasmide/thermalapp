@@ -50,6 +50,7 @@ func (h Header) frameDataSize() int {
 	w, ht := int(h.Width), int(h.Height)
 	thermal := w * ht * 2
 	ir := w * ht
+
 	return thermal + ir
 }
 
@@ -67,6 +68,7 @@ func writeHeader(w io.Writer, h Header) error {
 	binary.LittleEndian.PutUint32(buf[14:18], h.FrameCount)
 	binary.LittleEndian.PutUint64(buf[18:26], uint64(h.StartTime))
 	_, err := w.Write(buf[:])
+
 	return err
 }
 
@@ -84,6 +86,7 @@ func readHeader(r io.Reader) (Header, error) {
 	if ver != formatVersion {
 		return Header{}, fmt.Errorf("unsupported format version %d (expected %d)", ver, formatVersion)
 	}
+
 	return Header{
 		Width:      binary.LittleEndian.Uint16(buf[10:12]),
 		Height:     binary.LittleEndian.Uint16(buf[12:14]),
