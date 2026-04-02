@@ -37,17 +37,17 @@ func dropdownButton(gtx layout.Context, th *material.Theme, click *widget.Clicka
 				if isOpen {
 					bgCol = color.NRGBA{R: 60, G: 90, B: 160, A: 255}
 				}
-			defer clip.Rect{Max: gtx.Constraints.Min}.Push(gtx.Ops).Pop()
-			paint.Fill(gtx.Ops, bgCol)
+				defer clip.Rect{Max: gtx.Constraints.Min}.Push(gtx.Ops).Pop()
+				paint.Fill(gtx.Ops, bgCol)
 
-			return layout.Dimensions{Size: gtx.Constraints.Min}
-		},
+				return layout.Dimensions{Size: gtx.Constraints.Min}
+			},
 			func(gtx layout.Context) layout.Dimensions {
 				return layout.Inset{Left: unit.Dp(6), Right: unit.Dp(6), Top: unit.Dp(2), Bottom: unit.Dp(2)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-				lbl := material.Body2(th, label)
-				lbl.Color = lightGray
+					lbl := material.Body2(th, label)
+					lbl.Color = lightGray
 
-				return lbl.Layout(gtx)
+					return lbl.Layout(gtx)
 				})
 			},
 		)
@@ -215,11 +215,11 @@ func (d *EmissivityDropdown) Layout(gtx layout.Context, th *material.Theme, curr
 				Left: unit.Dp(8), Right: unit.Dp(8),
 				Top: unit.Dp(6), Bottom: unit.Dp(2),
 			}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-			lbl := material.Caption(th, row.category)
-			lbl.Color = headerColor
-			lbl.Font.Weight = font.Bold
+				lbl := material.Caption(th, row.category)
+				lbl.Color = headerColor
+				lbl.Font.Weight = font.Bold
 
-			return lbl.Layout(gtx)
+				return lbl.Layout(gtx)
 			})
 		}
 
@@ -244,14 +244,14 @@ func (d *EmissivityDropdown) Layout(gtx layout.Context, th *material.Theme, curr
 
 		return d.items[i].Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 			return layout.Stack{}.Layout(gtx,
-			layout.Expanded(func(gtx layout.Context) layout.Dimensions {
-				if bgColor.A > 0 {
-					defer clip.Rect{Max: gtx.Constraints.Min}.Push(gtx.Ops).Pop()
-					paint.Fill(gtx.Ops, bgColor)
-				}
+				layout.Expanded(func(gtx layout.Context) layout.Dimensions {
+					if bgColor.A > 0 {
+						defer clip.Rect{Max: gtx.Constraints.Min}.Push(gtx.Ops).Pop()
+						paint.Fill(gtx.Ops, bgColor)
+					}
 
-				return layout.Dimensions{Size: gtx.Constraints.Min}
-			}),
+					return layout.Dimensions{Size: gtx.Constraints.Min}
+				}),
 				layout.Stacked(func(gtx layout.Context) layout.Dimensions {
 					return layout.Inset{
 						Left: unit.Dp(16), Right: unit.Dp(10),
@@ -259,13 +259,13 @@ func (d *EmissivityDropdown) Layout(gtx layout.Context, th *material.Theme, curr
 					}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 						return layout.Flex{Axis: layout.Horizontal, Spacing: layout.SpaceBetween}.Layout(gtx,
 							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						lbl := material.Body2(th, preset.Name)
-							lbl.Color = lightGray
-							if isSelected {
-								lbl.Color = color.NRGBA{R: 255, G: 255, B: 255, A: 255}
-							}
+								lbl := material.Body2(th, preset.Name)
+								lbl.Color = lightGray
+								if isSelected {
+									lbl.Color = color.NRGBA{R: 255, G: 255, B: 255, A: 255}
+								}
 
-							return lbl.Layout(gtx)
+								return lbl.Layout(gtx)
 							}),
 							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 								txt := fmt.Sprintf("%.2f", preset.Emissivity)
@@ -274,9 +274,9 @@ func (d *EmissivityDropdown) Layout(gtx layout.Context, th *material.Theme, curr
 								if isSelected {
 									lbl.Color = color.NRGBA{R: 200, G: 200, B: 255, A: 255}
 								}
-							lbl.Alignment = text.End
+								lbl.Alignment = text.End
 
-							return lbl.Layout(gtx)
+								return lbl.Layout(gtx)
 							}),
 						)
 					})
@@ -519,19 +519,19 @@ func (p *BufferPanel) Layout(gtx layout.Context, th *material.Theme, currentByte
 			return layout.Inset{Left: unit.Dp(12), Right: unit.Dp(12), Top: unit.Dp(10), Bottom: unit.Dp(4)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 				return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					lbl := material.Body1(th, "Buffer Settings")
-					lbl.Color = lightGray
-					lbl.Font.Weight = font.Bold
+						lbl := material.Body1(th, "Buffer Settings")
+						lbl.Color = lightGray
+						lbl.Font.Weight = font.Bold
 
-					return lbl.Layout(gtx)
+						return lbl.Layout(gtx)
 					}),
 					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 						return layout.Inset{Top: unit.Dp(4)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 							txt := fmt.Sprintf("Available RAM: %s    |    Coverage: ≈ %s", availStr, formatDuration(coverage))
-						lbl := material.Body2(th, txt)
-						lbl.Color = accentGreen
+							lbl := material.Body2(th, txt)
+							lbl.Color = accentGreen
 
-						return lbl.Layout(gtx)
+							return lbl.Layout(gtx)
 						})
 					}),
 				)
@@ -540,18 +540,18 @@ func (p *BufferPanel) Layout(gtx layout.Context, th *material.Theme, currentByte
 		// Buffer size section
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 			return layout.Inset{Left: unit.Dp(12), Top: unit.Dp(8), Bottom: unit.Dp(2)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-			lbl := material.Caption(th, "BUFFER SIZE")
-			lbl.Color = headerColor
-			lbl.Font.Weight = font.Bold
+				lbl := material.Caption(th, "BUFFER SIZE")
+				lbl.Color = headerColor
+				lbl.Font.Weight = font.Bold
 
-			return lbl.Layout(gtx)
+				return lbl.Layout(gtx)
 			})
 		}),
 		layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-		listStyle := material.List(th, &p.sizeList)
-		nRows := len(bufSizePresets)
+			listStyle := material.List(th, &p.sizeList)
+			nRows := len(bufSizePresets)
 
-		return listStyle.Layout(gtx, nRows, func(gtx layout.Context, i int) layout.Dimensions {
+			return listStyle.Layout(gtx, nRows, func(gtx layout.Context, i int) layout.Dimensions {
 				pr := bufSizePresets[i]
 
 				if p.sizeItems[i].Clicked(gtx) {
@@ -578,29 +578,29 @@ func (p *BufferPanel) Layout(gtx layout.Context, th *material.Theme, currentByte
 
 				return p.sizeItems[i].Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 					return layout.Stack{}.Layout(gtx,
-					layout.Expanded(func(gtx layout.Context) layout.Dimensions {
-						if bgColor.A > 0 {
-							defer clip.Rect{Max: gtx.Constraints.Min}.Push(gtx.Ops).Pop()
-							paint.Fill(gtx.Ops, bgColor)
-						}
-
-						return layout.Dimensions{Size: gtx.Constraints.Min}
-					}),
-					layout.Stacked(func(gtx layout.Context) layout.Dimensions {
-						return layout.Inset{Left: unit.Dp(16), Right: unit.Dp(12), Top: unit.Dp(3), Bottom: unit.Dp(3)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-							lbl := material.Body2(th, label)
-							if avail > 0 && pr.Bytes > avail {
-								lbl.Color = dimGray
-							} else {
-								lbl.Color = lightGray
-							}
-							if isSelected {
-								lbl.Color = color.NRGBA{R: 255, G: 255, B: 255, A: 255}
+						layout.Expanded(func(gtx layout.Context) layout.Dimensions {
+							if bgColor.A > 0 {
+								defer clip.Rect{Max: gtx.Constraints.Min}.Push(gtx.Ops).Pop()
+								paint.Fill(gtx.Ops, bgColor)
 							}
 
-							return lbl.Layout(gtx)
-						})
-					}),
+							return layout.Dimensions{Size: gtx.Constraints.Min}
+						}),
+						layout.Stacked(func(gtx layout.Context) layout.Dimensions {
+							return layout.Inset{Left: unit.Dp(16), Right: unit.Dp(12), Top: unit.Dp(3), Bottom: unit.Dp(3)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+								lbl := material.Body2(th, label)
+								if avail > 0 && pr.Bytes > avail {
+									lbl.Color = dimGray
+								} else {
+									lbl.Color = lightGray
+								}
+								if isSelected {
+									lbl.Color = color.NRGBA{R: 255, G: 255, B: 255, A: 255}
+								}
+
+								return lbl.Layout(gtx)
+							})
+						}),
 					)
 				})
 			})
@@ -608,28 +608,28 @@ func (p *BufferPanel) Layout(gtx layout.Context, th *material.Theme, currentByte
 		// Divider
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 			return layout.Inset{Left: unit.Dp(12), Right: unit.Dp(12), Top: unit.Dp(4), Bottom: unit.Dp(4)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-			size := image.Pt(gtx.Constraints.Max.X, gtx.Dp(unit.Dp(1)))
-			defer clip.Rect{Max: size}.Push(gtx.Ops).Pop()
-			paint.Fill(gtx.Ops, color.NRGBA{R: 70, G: 70, B: 70, A: 255})
+				size := image.Pt(gtx.Constraints.Max.X, gtx.Dp(unit.Dp(1)))
+				defer clip.Rect{Max: size}.Push(gtx.Ops).Pop()
+				paint.Fill(gtx.Ops, color.NRGBA{R: 70, G: 70, B: 70, A: 255})
 
-			return layout.Dimensions{Size: size}
+				return layout.Dimensions{Size: size}
 			})
 		}),
 		// Sample rate section
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 			return layout.Inset{Left: unit.Dp(12), Top: unit.Dp(2), Bottom: unit.Dp(2)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-			lbl := material.Caption(th, "SAMPLE RATE")
-			lbl.Color = headerColor
-			lbl.Font.Weight = font.Bold
+				lbl := material.Caption(th, "SAMPLE RATE")
+				lbl.Color = headerColor
+				lbl.Font.Weight = font.Bold
 
-			return lbl.Layout(gtx)
+				return lbl.Layout(gtx)
 			})
 		}),
 		layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-		listStyle := material.List(th, &p.rateList)
-		nRows := len(sampleRatePresets)
+			listStyle := material.List(th, &p.rateList)
+			nRows := len(sampleRatePresets)
 
-		return listStyle.Layout(gtx, nRows, func(gtx layout.Context, i int) layout.Dimensions {
+			return listStyle.Layout(gtx, nRows, func(gtx layout.Context, i int) layout.Dimensions {
 				pr := sampleRatePresets[i]
 
 				if p.rateItems[i].Clicked(gtx) {
@@ -658,35 +658,35 @@ func (p *BufferPanel) Layout(gtx layout.Context, th *material.Theme, currentByte
 
 				return p.rateItems[i].Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 					return layout.Stack{}.Layout(gtx,
-					layout.Expanded(func(gtx layout.Context) layout.Dimensions {
-						if bgColor.A > 0 {
-							defer clip.Rect{Max: gtx.Constraints.Min}.Push(gtx.Ops).Pop()
-							paint.Fill(gtx.Ops, bgColor)
-						}
+						layout.Expanded(func(gtx layout.Context) layout.Dimensions {
+							if bgColor.A > 0 {
+								defer clip.Rect{Max: gtx.Constraints.Min}.Push(gtx.Ops).Pop()
+								paint.Fill(gtx.Ops, bgColor)
+							}
 
-						return layout.Dimensions{Size: gtx.Constraints.Min}
-					}),
+							return layout.Dimensions{Size: gtx.Constraints.Min}
+						}),
 						layout.Stacked(func(gtx layout.Context) layout.Dimensions {
 							return layout.Inset{Left: unit.Dp(16), Right: unit.Dp(12), Top: unit.Dp(3), Bottom: unit.Dp(3)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 								return layout.Flex{Axis: layout.Horizontal, Spacing: layout.SpaceBetween}.Layout(gtx,
 									layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-								lbl := material.Body2(th, pr.Label)
-									lbl.Color = lightGray
-									if isSelected {
-										lbl.Color = color.NRGBA{R: 255, G: 255, B: 255, A: 255}
-									}
+										lbl := material.Body2(th, pr.Label)
+										lbl.Color = lightGray
+										if isSelected {
+											lbl.Color = color.NRGBA{R: 255, G: 255, B: 255, A: 255}
+										}
 
-									return lbl.Layout(gtx)
+										return lbl.Layout(gtx)
 									}),
 									layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-								lbl := material.Body2(th, "≈ "+covLabel)
-									lbl.Color = dimGray
-									if isSelected {
-										lbl.Color = color.NRGBA{R: 200, G: 200, B: 255, A: 255}
-									}
-									lbl.Alignment = text.End
+										lbl := material.Body2(th, "≈ "+covLabel)
+										lbl.Color = dimGray
+										if isSelected {
+											lbl.Color = color.NRGBA{R: 200, G: 200, B: 255, A: 255}
+										}
+										lbl.Alignment = text.End
 
-									return lbl.Layout(gtx)
+										return lbl.Layout(gtx)
 									}),
 								)
 							})

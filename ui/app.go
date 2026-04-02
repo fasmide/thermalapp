@@ -625,11 +625,11 @@ func (a *App) handlePointer(gtx layout.Context) {
 						spX, spY := a.spots[i].GetPosition()
 						dx := int(spX) - imgX
 						dy := int(spY) - imgY
-					if dx*dx+dy*dy < 25 {
-						found = i
+						if dx*dx+dy*dy < 25 {
+							found = i
 
-						break
-					}
+							break
+						}
 					}
 					if found >= 0 {
 						if a.selectedSpot == found {
@@ -675,10 +675,10 @@ func (a *App) handlePointer(gtx layout.Context) {
 									newGraphs[j] = gw
 								}
 							}
-						a.graphs = newGraphs
-						removed = true
+							a.graphs = newGraphs
+							removed = true
 
-						break
+							break
 						}
 					}
 					if !removed {
@@ -1173,32 +1173,32 @@ func (a *App) layoutPlaybackBar(gtx layout.Context) layout.Dimensions {
 						}
 
 						return material.Clickable(gtx, &a.playPauseClick, func(gtx layout.Context) layout.Dimensions {
-						btnBg := color.NRGBA{R: 50, G: 50, B: 50, A: 255}
-						if a.playPauseClick.Hovered() {
-							btnBg = color.NRGBA{R: 70, G: 70, B: 70, A: 255}
-						}
+							btnBg := color.NRGBA{R: 50, G: 50, B: 50, A: 255}
+							if a.playPauseClick.Hovered() {
+								btnBg = color.NRGBA{R: 70, G: 70, B: 70, A: 255}
+							}
 
-						return layout.Background{}.Layout(gtx,
-							func(gtx layout.Context) layout.Dimensions {
-								defer clip.Rect{Max: gtx.Constraints.Min}.Push(gtx.Ops).Pop()
-								paint.Fill(gtx.Ops, btnBg)
+							return layout.Background{}.Layout(gtx,
+								func(gtx layout.Context) layout.Dimensions {
+									defer clip.Rect{Max: gtx.Constraints.Min}.Push(gtx.Ops).Pop()
+									paint.Fill(gtx.Ops, btnBg)
 
-								return layout.Dimensions{Size: gtx.Constraints.Min}
-							},
-							func(gtx layout.Context) layout.Dimensions {
-								return layout.Inset{Left: unit.Dp(8), Right: unit.Dp(8), Top: unit.Dp(2), Bottom: unit.Dp(2)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-									txt := "PLAY"
-									if !paused {
-										txt = "PAUS"
-									}
-									lbl := material.Body2(a.theme, txt)
-									lbl.Color = lightGray
-									lbl.Font.Weight = font.Bold
+									return layout.Dimensions{Size: gtx.Constraints.Min}
+								},
+								func(gtx layout.Context) layout.Dimensions {
+									return layout.Inset{Left: unit.Dp(8), Right: unit.Dp(8), Top: unit.Dp(2), Bottom: unit.Dp(2)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+										txt := "PLAY"
+										if !paused {
+											txt = "PAUS"
+										}
+										lbl := material.Body2(a.theme, txt)
+										lbl.Color = lightGray
+										lbl.Font.Weight = font.Bold
 
-									return lbl.Layout(gtx)
-								})
-							},
-						)
+										return lbl.Layout(gtx)
+									})
+								},
+							)
 						})
 					}),
 					// Slider (Flexed — left edge anchored next to button)
@@ -1210,10 +1210,10 @@ func (a *App) layoutPlaybackBar(gtx layout.Context) layout.Dimensions {
 						return layout.Inset{Left: unit.Dp(6), Right: unit.Dp(4)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 							ft := player.FrameTime()
 							txt := fmt.Sprintf("%d/%d  %s", current, total, ft.Format("2006-01-02 15:04:05"))
-						lbl := material.Body2(a.theme, txt)
-						lbl.Color = lightGray
+							lbl := material.Body2(a.theme, txt)
+							lbl.Color = lightGray
 
-						return lbl.Layout(gtx)
+							return lbl.Layout(gtx)
 						})
 					}),
 				)
@@ -1436,30 +1436,30 @@ func (a *App) layoutStatus(gtx layout.Context, _ *colorize.Result) layout.Dimens
 					layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
 						return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle, Spacing: layout.SpaceSides}.Layout(gtx,
 							// Left section
-						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-							lbl := material.Body2(a.theme, leftStatus)
-							lbl.Color = lightGray
+							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+								lbl := material.Body2(a.theme, leftStatus)
+								lbl.Color = lightGray
 
-							return lbl.Layout(gtx)
-						}),
+								return lbl.Layout(gtx)
+							}),
 							// Clickable emissivity button
 							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 								return dropdownButton(gtx, a.theme, &a.epsClick, a.epsDropdown.IsOpen(), epsLabel)
 							}),
 							// Right section
-						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-							lbl := material.Body2(a.theme, rightStatus)
-							lbl.Color = lightGray
+							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+								lbl := material.Body2(a.theme, rightStatus)
+								lbl.Color = lightGray
 
-							return lbl.Layout(gtx)
-						}),
+								return lbl.Layout(gtx)
+							}),
 							// Clickable buffer size button
 							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						if bufLabel == "" {
-								return layout.Dimensions{}
-							}
+								if bufLabel == "" {
+									return layout.Dimensions{}
+								}
 
-							return dropdownButton(gtx, a.theme, &a.bufClick, a.bufPanel.IsOpen(), bufLabel)
+								return dropdownButton(gtx, a.theme, &a.bufClick, a.bufPanel.IsOpen(), bufLabel)
 							}),
 						)
 					}),
@@ -1548,16 +1548,16 @@ func (a *App) layoutHelp(gtx layout.Context) {
 					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 						gtx.Constraints.Min.X = keyW
 						gtx.Constraints.Max.X = keyW
-					lbl := material.Body2(a.theme, r.key)
-					lbl.Color = lightGray
+						lbl := material.Body2(a.theme, r.key)
+						lbl.Color = lightGray
 
-					return lbl.Layout(gtx)
+						return lbl.Layout(gtx)
 					}),
 					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					lbl := material.Body2(a.theme, r.desc)
-					lbl.Color = lightGray
+						lbl := material.Body2(a.theme, r.desc)
+						lbl.Color = lightGray
 
-					return lbl.Layout(gtx)
+						return lbl.Layout(gtx)
 					}),
 				)
 			}))

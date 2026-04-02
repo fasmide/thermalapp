@@ -33,8 +33,8 @@ func availableMemoryBytes() int64 {
 				if kb, err := strconv.ParseInt(fields[1], 10, 64); err == nil {
 					return kb * 1024
 				}
-	}
-	}
+			}
+		}
 	}
 
 	return 0

@@ -143,21 +143,21 @@ func (gw *GraphWindow) layoutGraph(gtx layout.Context) layout.Dimensions {
 
 			return layout.UniformInset(unit.Dp(4)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 				return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
-				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					lbl := material.Body2(gw.theme, leftTitle)
-					lbl.Color = lightGray
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						lbl := material.Body2(gw.theme, leftTitle)
+						lbl.Color = lightGray
 
-					return lbl.Layout(gtx)
-				}),
-				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					return dropdownButton(gtx, gw.theme, &gw.epsClick, gw.epsDropdown.IsOpen(), epsLabel)
-				}),
-				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					lbl := material.Body2(gw.theme, rightTitle)
-					lbl.Color = lightGray
+						return lbl.Layout(gtx)
+					}),
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						return dropdownButton(gtx, gw.theme, &gw.epsClick, gw.epsDropdown.IsOpen(), epsLabel)
+					}),
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						lbl := material.Body2(gw.theme, rightTitle)
+						lbl.Color = lightGray
 
-					return lbl.Layout(gtx)
-				}),
+						return lbl.Layout(gtx)
+					}),
 				)
 			})
 		}),

@@ -183,11 +183,11 @@ func runRevMeta() {
 					fmt.Println()
 				}
 			}
-		prev = make([]uint16, len(meta))
-		copy(prev, meta)
+			prev = make([]uint16, len(meta))
+			copy(prev, meta)
 
-		continue
-	}
+			continue
+		}
 
 		// Print only changes
 		changed := 0
@@ -299,11 +299,11 @@ func runRevMeta2() {
 				if i < len(prev) && meta[i] != prev[i] {
 					tracked := false
 					for _, r := range regs {
-					if r.idx == i {
-						tracked = true
+						if r.idx == i {
+							tracked = true
 
-						break
-					}
+							break
+						}
 					}
 					if !tracked {
 						extraChanges++
