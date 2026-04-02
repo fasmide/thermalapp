@@ -1,0 +1,38 @@
+linters:
+  disable-all: true
+  enable:
+    - dupl
+    - gocognit
+    - revive
+    - copyloopvar
+    - cyclop
+    - gocritic
+    - intrange
+    - lll
+    - mnd
+    - nestif
+    - nlreturn
+    - unparam
+    - varnamelen
+    - wrapcheck
+
+linters-settings:
+  mnd:
+    # Only check the meaningful contexts; exclude "assign" because struct-literal
+    # color fields (color.NRGBA{R: 255, G: 60, ...}) are inherently numeric and
+    # naming each component individually reduces readability.
+    checks:
+      - argument
+      - case
+      - condition
+      - operation
+      - return
+    # Ignore well-known mathematical and physical constants used in formulas.
+    ignored-values:
+      - "0.05"   # 5% padding fraction for graph Y axis
+      - "0.114"  # blue luminance weight (ITU-R BT.601)
+      - "0.299"  # red luminance weight (ITU-R BT.601)
+      - "0.5"    # half / midpoint fraction
+      - "0.587"  # green luminance weight (ITU-R BT.601)
+      - "1000.0" # microseconds-to-milliseconds conversion
+      - "1024"   # bytes per kilobyte
