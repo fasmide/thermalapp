@@ -119,77 +119,43 @@ func (gw *GraphWindow) run() {
 	}
 }
 
+// spotKindString returns the display label for a spot kind.
+func spotKindString(spot *Spot) string {
+	switch spot.Kind {
+	case SpotMin:
+		return "Min"
+	case SpotMax:
+		return "Max"
+	case SpotCursor:
+		return "Cursor"
+	default:
+		return fmt.Sprintf("Point %d", spot.Index)
+	}
+}
+
+// graphSamples returns the samples for a graph window based on spot kind.
+func (gw *GraphWindow) graphSamples() []Sample {
+	switch gw.spot.Kind {
+	case SpotMin, SpotMax:
+		return gw.spot.History(0)
+	default:
+		xPos, yPos := gw.spot.GetPosition()
+
+		return gw.pixSrc.QueryPixel(int(xPos), int(yPos), 0)
+	}
+}
+
 func (gw *GraphWindow) layoutGraph(gtx layout.Context) layout.Dimensions {
 	start := time.Now()
 	defer func() { gw.renderMs = float64(time.Since(start).Microseconds()) / msPerSecond }()
 
-	// Fetch graph data: buffer for cursor/user, spot ring buffer for min/max
-	var allSamples []Sample
-	switch gw.spot.Kind {
-	case SpotMin, SpotMax:
-		allSamples = gw.spot.History(0)
-	default:
-		x, y := gw.spot.GetPosition()
-		allSamples = gw.pixSrc.QueryPixel(int(x), int(y), 0)
-	}
+	allSamples := gw.graphSamples()
 	stats := ComputeStats(allSamples)
 
 	dims := layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 		// Title bar
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			spot := gw.spot
-			kindStr := ""
-			switch spot.Kind {
-			case SpotMin:
-				kindStr = "Min"
-			case SpotMax:
-				kindStr = "Max"
-			case SpotCursor:
-				kindStr = "Cursor"
-			case SpotUser:
-				kindStr = fmt.Sprintf("Point %d", spot.Index)
-			}
-
-			dur := stats.Duration.Truncate(time.Second)
-
-			epsLabel := " e: global "
-			_, spotEpsIdx := spot.GetEmissivity()
-			if spotEpsIdx >= 0 && spotEpsIdx < len(colorize.EmissivityPresets) {
-				p := colorize.EmissivityPresets[spotEpsIdx]
-				epsLabel = fmt.Sprintf(" e: %.2f %s ", p.Emissivity, p.Name)
-			}
-
-			leftTitle := fmt.Sprintf("Spot %d (%s)  |", spot.Index, kindStr)
-			latencyMs := float64(time.Since(spot.LastMoveTime()).Microseconds()) / msPerSecond
-			rightTitle := fmt.Sprintf(rightTitleFmt,
-				stats.Current, stats.Min, stats.Max, stats.Mean, stats.StdDev, stats.Count, dur, gw.renderMs, latencyMs)
-
-			lightGray := color.NRGBA{R: 220, G: 220, B: 220, A: 255}
-
-			currentIdx := spotEpsIdx
-			if gw.epsClick.Clicked(gtx) {
-				gw.epsDropdown.Toggle(currentIdx)
-			}
-
-			return layout.UniformInset(unit.Dp(graphTitleInsetDp)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-				return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
-					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						lbl := material.Body2(gw.theme, leftTitle)
-						lbl.Color = lightGray
-
-						return lbl.Layout(gtx)
-					}),
-					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						return dropdownButton(gtx, gw.theme, &gw.epsClick, gw.epsDropdown.IsOpen(), epsLabel)
-					}),
-					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						lbl := material.Body2(gw.theme, rightTitle)
-						lbl.Color = lightGray
-
-						return lbl.Layout(gtx)
-					}),
-				)
-			})
+			return gw.layoutTitleBar(gtx, stats)
 		}),
 		// Graph area
 		layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
@@ -200,15 +166,106 @@ func (gw *GraphWindow) layoutGraph(gtx layout.Context) layout.Dimensions {
 	// Emissivity dropdown overlay
 	if gw.epsDropdown.IsOpen() {
 		_, currentIdx := gw.spot.GetEmissivity()
-		// For per-spot, -1 means "global" — map to preset list idx
-		displayIdx := currentIdx
-		if sel := gw.epsDropdown.Layout(gtx, gw.theme, displayIdx); sel >= 0 {
+		if sel := gw.epsDropdown.Layout(gtx, gw.theme, currentIdx); sel >= 0 {
 			preset := colorize.EmissivityPresets[sel]
 			gw.spot.SetEmissivity(preset.Emissivity, sel)
 		}
 	}
 
 	return dims
+}
+
+func (gw *GraphWindow) layoutTitleBar(gtx layout.Context, stats SpotStats) layout.Dimensions {
+	spot := gw.spot
+	kindStr := spotKindString(spot)
+	dur := stats.Duration.Truncate(time.Second)
+
+	epsLabel := " e: global "
+	_, spotEpsIdx := spot.GetEmissivity()
+	if spotEpsIdx >= 0 && spotEpsIdx < len(colorize.EmissivityPresets) {
+		pres := colorize.EmissivityPresets[spotEpsIdx]
+		epsLabel = fmt.Sprintf(" e: %.2f %s ", pres.Emissivity, pres.Name)
+	}
+
+	leftTitle := fmt.Sprintf("Spot %d (%s)  |", spot.Index, kindStr)
+	latencyMs := float64(time.Since(spot.LastMoveTime()).Microseconds()) / msPerSecond
+	rightTitle := fmt.Sprintf(rightTitleFmt,
+		stats.Current, stats.Min, stats.Max, stats.Mean, stats.StdDev, stats.Count, dur, gw.renderMs, latencyMs)
+
+	lightGray := color.NRGBA{R: 220, G: 220, B: 220, A: 255}
+
+	if gw.epsClick.Clicked(gtx) {
+		gw.epsDropdown.Toggle(spotEpsIdx)
+	}
+
+	return layout.UniformInset(unit.Dp(graphTitleInsetDp)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+		return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				lbl := material.Body2(gw.theme, leftTitle)
+				lbl.Color = lightGray
+
+				return lbl.Layout(gtx)
+			}),
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				return dropdownButton(gtx, gw.theme, &gw.epsClick, gw.epsDropdown.IsOpen(), epsLabel)
+			}),
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				lbl := material.Body2(gw.theme, rightTitle)
+				lbl.Color = lightGray
+
+				return lbl.Layout(gtx)
+			}),
+		)
+	})
+}
+
+// computeYRange returns the Y-axis min, max, and span for the given samples,
+// with padding added so the trace has breathing room.
+func computeYRange(samples []Sample) (minT, maxT, rangeT float32) {
+	minT, maxT = samples[0].Temp, samples[0].Temp
+	for _, samp := range samples {
+		if samp.Temp < minT {
+			minT = samp.Temp
+		}
+		if samp.Temp > maxT {
+			maxT = samp.Temp
+		}
+	}
+
+	rangeT = maxT - minT
+	if rangeT < minTempRangeC {
+		mid := (minT + maxT) / graphCenterDiv
+		minT = mid - minTempRangeC/graphCenterDiv
+		maxT = mid + minTempRangeC/graphCenterDiv
+		rangeT = minTempRangeC
+	} else {
+		pad := rangeT * graphPadFrac
+		minT -= pad
+		maxT += pad
+		rangeT = maxT - minT
+	}
+
+	return minT, maxT, rangeT
+}
+
+// drawGridLines paints horizontal grid lines and Y-axis temperature labels.
+func (gw *GraphWindow) drawGridLines(gtx layout.Context, graphX, graphY, graphW, graphH int, maxT, rangeT float32) {
+	nLines := 5
+	for gridLine := 0; gridLine <= nLines; gridLine++ {
+		frac := float32(gridLine) / float32(nLines)
+		gridY := graphY + int(frac*float32(graphH))
+		temp := maxT - frac*rangeT
+
+		gridOp := clip.Rect{Min: image.Pt(graphX, gridY), Max: image.Pt(graphX+graphW, gridY+1)}.Push(gtx.Ops)
+		paint.Fill(gtx.Ops, color.NRGBA{R: 60, G: 60, B: 60, A: 255})
+		gridOp.Pop()
+
+		labelOp := op.Offset(image.Pt(graphAxisLabelXOff, gridY-graphAxisLabelYAdj)).Push(gtx.Ops)
+		lbl := material.Caption(gw.theme, fmt.Sprintf("%.1f", temp))
+		lbl.Color = color.NRGBA{R: 150, G: 150, B: 150, A: 255}
+		lbl.Layout(gtx)
+		labelOp.Pop()
+	}
 }
 
 func (gw *GraphWindow) drawGraph(gtx layout.Context, allSamples []Sample) layout.Dimensions {
@@ -243,50 +300,8 @@ func (gw *GraphWindow) drawGraph(gtx layout.Context, allSamples []Sample) layout
 		return layout.Dimensions{Size: image.Pt(graphAreaW, graphAreaH)}
 	}
 
-	// Find min/max for Y axis
-	minT, maxT := samples[0].Temp, samples[0].Temp
-	for _, samp := range samples {
-		if samp.Temp < minT {
-			minT = samp.Temp
-		}
-		if samp.Temp > maxT {
-			maxT = samp.Temp
-		}
-	}
-
-	// Add some padding to the range (minimum minTempRangeC so noise doesn't dominate)
-	rangeT := maxT - minT
-	if rangeT < minTempRangeC {
-		mid := (minT + maxT) / graphCenterDiv
-		minT = mid - minTempRangeC/graphCenterDiv
-		maxT = mid + minTempRangeC/graphCenterDiv
-		rangeT = minTempRangeC
-	} else {
-		pad := rangeT * graphPadFrac
-		minT -= pad
-		maxT += pad
-		rangeT = maxT - minT
-	}
-
-	// Draw grid lines and Y-axis labels
-	nLines := 5
-	for gridLine := 0; gridLine <= nLines; gridLine++ {
-		frac := float32(gridLine) / float32(nLines)
-		gridY := graphY + int(frac*float32(graphH))
-		temp := maxT - frac*rangeT
-
-		// Grid line
-		gridOp := clip.Rect{Min: image.Pt(graphX, gridY), Max: image.Pt(graphX+graphW, gridY+1)}.Push(gtx.Ops)
-		paint.Fill(gtx.Ops, color.NRGBA{R: 60, G: 60, B: 60, A: 255})
-		gridOp.Pop()
-
-		// Label
-		labelOp := op.Offset(image.Pt(graphAxisLabelXOff, gridY-graphAxisLabelYAdj)).Push(gtx.Ops)
-		lbl := material.Caption(gw.theme, fmt.Sprintf("%.1f", temp))
-		lbl.Color = color.NRGBA{R: 150, G: 150, B: 150, A: 255}
-		lbl.Layout(gtx)
-		labelOp.Pop()
-	}
+	minT, maxT, rangeT := computeYRange(samples)
+	gw.drawGridLines(gtx, graphX, graphY, graphW, graphH, maxT, rangeT)
 
 	// Draw the temperature trace
 	spotColor := gw.spot.Color
@@ -294,13 +309,11 @@ func (gw *GraphWindow) drawGraph(gtx layout.Context, allSamples []Sample) layout
 	xStep := float32(graphW) / float32(sampleCount-1)
 
 	for sampleIdx := 1; sampleIdx < sampleCount; sampleIdx++ {
-		// Map two consecutive samples to pixel coordinates
 		fromX := float32(graphX) + float32(sampleIdx-1)*xStep
 		toX := float32(graphX) + float32(sampleIdx)*xStep
 		fromY := float32(graphY) + (1-(samples[sampleIdx-1].Temp-minT)/rangeT)*float32(graphH)
 		toY := float32(graphY) + (1-(samples[sampleIdx].Temp-minT)/rangeT)*float32(graphH)
 
-		// Draw a thin rect between the two points (approximation of a line)
 		drawLine(gtx, fromX, fromY, toX, toY, spotColor)
 	}
 

@@ -180,25 +180,28 @@ func (c *P3Camera) Init() (DeviceInfo, error) {
 	return info, nil
 }
 
-func (c *P3Camera) StartStreaming() error {
-	// Initial start_stream command with status checks
+// startStreamHandshake sends the start_stream command and performs the
+// surrounding status/response checks (two round trips).
+func (c *P3Camera) startStreamHandshake(label string) error {
 	if err := c.sendCommand(commands["start_stream"]); err != nil {
-		return fmt.Errorf("start_stream cmd: %w", err)
+		return fmt.Errorf("%s cmd: %w", label, err)
 	}
 	if err := c.readStatus(); err != nil {
-		return fmt.Errorf("start_stream status 1: %w", err)
+		return fmt.Errorf("%s status 1: %w", label, err)
 	}
 	if _, err := c.readResponse(1); err != nil {
-		return fmt.Errorf("start_stream response: %w", err)
+		return fmt.Errorf("%s response: %w", label, err)
 	}
 	if err := c.readStatus(); err != nil {
-		return fmt.Errorf("start_stream status 2: %w", err)
+		return fmt.Errorf("%s status 2: %w", label, err)
 	}
 
-	time.Sleep(startStreamDelay1)
+	return nil
+}
 
-	// Switch Interface 1 to alt setting 1 (enables streaming).
-	// Close current claim, re-claim with alt 1.
+// openStreamEndpoint switches Interface 1 to alt-setting 1 and opens the
+// bulk IN endpoint, making the camera ready to stream.
+func (c *P3Camera) openStreamEndpoint() error {
 	c.intf1.Close()
 
 	intf1, err := c.cfg.Interface(1, 1)
@@ -207,17 +210,29 @@ func (c *P3Camera) StartStreaming() error {
 	}
 	c.intf1 = intf1
 
-	// Find bulk IN endpoint 0x81
 	ep, err := intf1.InEndpoint(usbStreamEndpoint)
 	if err != nil {
 		return fmt.Errorf("get endpoint 0x81: %w", err)
 	}
 	c.ep = ep
 
-	// Send 0xEE control transfer (start streaming at device level)
 	_, err = c.dev.Control(usbCtrlVendorOut, usbBRequestStartStream, 0, 1, nil)
 	if err != nil {
 		return fmt.Errorf("send 0xEE: %w", err)
+	}
+
+	return nil
+}
+
+func (c *P3Camera) StartStreaming() error {
+	if err := c.startStreamHandshake("start_stream"); err != nil {
+		return err
+	}
+
+	time.Sleep(startStreamDelay1)
+
+	if err := c.openStreamEndpoint(); err != nil {
+		return err
 	}
 
 	time.Sleep(startStreamDelay2)
@@ -228,18 +243,8 @@ func (c *P3Camera) StartStreaming() error {
 		log.Printf("initial bulk read (expected timeout): %v", err)
 	}
 
-	// Final start_stream command
-	if err := c.sendCommand(commands["start_stream"]); err != nil {
-		return fmt.Errorf("final start_stream: %w", err)
-	}
-	if err := c.readStatus(); err != nil {
-		return fmt.Errorf("final start_stream status 1: %w", err)
-	}
-	if _, err := c.readResponse(1); err != nil {
-		return fmt.Errorf("final start_stream response: %w", err)
-	}
-	if err := c.readStatus(); err != nil {
-		return fmt.Errorf("final start_stream status 2: %w", err)
+	if err := c.startStreamHandshake("final start_stream"); err != nil {
+		return err
 	}
 
 	c.streaming = true
@@ -247,24 +252,37 @@ func (c *P3Camera) StartStreaming() error {
 	return nil
 }
 
-func (c *P3Camera) ReadFrame() (*Frame, error) {
-	if !c.streaming || c.ep == nil {
-		return nil, fmt.Errorf("not streaming")
+// updateShutterState updates frame.ShutterActive and frame.HardwareFrameCounter
+// based on metadata register 64, and advances the camera's prevFrameCnt.
+func (c *P3Camera) updateShutterState(frame *Frame) {
+	if len(frame.Metadata) <= metadataMaxIdx {
+		return
 	}
 
-	totalSize := p3FrameSize + markerCount*markerSize
+	frameCnt := frame.Metadata[metadataMaxIdx]
+	frame.HardwareFrameCounter = frameCnt
+
+	if c.firstFrame {
+		c.firstFrame = false
+	} else if frameCnt == c.prevFrameCnt {
+		frame.ShutterActive = true
+	}
+
+	c.prevFrameCnt = frameCnt
+}
+
+// readBulkFrame accumulates bulk USB reads into c.frameBuf until totalSize bytes
+// have been received, resyncing on unexpected marker-sized mid-frame reads.
+func (c *P3Camera) readBulkFrame(totalSize int) error {
 	pos := 0
 	chunk := make([]byte, chunkSize)
 
 	for pos < totalSize {
 		bytesRead, err := c.ep.Read(chunk)
 		if err != nil {
-			return nil, fmt.Errorf("bulk read: %w", err)
+			return fmt.Errorf("bulk read: %w", err)
 		}
 
-		// Frame sync logic (from p3_camera.py read_frame):
-		// End marker is always a 12-byte read. If we get 12 bytes
-		// mid-frame, or exceed total without ending on 12 bytes, resync.
 		nextPos := pos + bytesRead
 		if (bytesRead == markerSize && nextPos < totalSize) || (nextPos >= totalSize && bytesRead != markerSize) {
 			pos = 0
@@ -275,6 +293,20 @@ func (c *P3Camera) ReadFrame() (*Frame, error) {
 
 		copy(c.frameBuf[pos:pos+bytesRead], chunk[:bytesRead])
 		pos = nextPos
+	}
+
+	return nil
+}
+
+func (c *P3Camera) ReadFrame() (*Frame, error) {
+	if !c.streaming || c.ep == nil {
+		return nil, fmt.Errorf("not streaming")
+	}
+
+	totalSize := p3FrameSize + markerCount*markerSize
+
+	if err := c.readBulkFrame(totalSize); err != nil {
+		return nil, err
 	}
 
 	startMarker := parseMarker(c.frameBuf[:markerSize])
@@ -289,19 +321,7 @@ func (c *P3Camera) ReadFrame() (*Frame, error) {
 		return nil, err
 	}
 
-	// Populate shutter state from metadata registers.
-	// Register 64 = camera frame counter, register 72 = shutter countdown.
-	if len(frame.Metadata) > metadataMaxIdx {
-		frameCnt := frame.Metadata[metadataMaxIdx]
-		frame.HardwareFrameCounter = frameCnt
-
-		if c.firstFrame {
-			c.firstFrame = false
-		} else if frameCnt == c.prevFrameCnt {
-			frame.ShutterActive = true
-		}
-		c.prevFrameCnt = frameCnt
-	}
+	c.updateShutterState(frame)
 
 	return frame, nil
 }

@@ -41,8 +41,7 @@ const (
 	dropdownDividerInsetDp   = 4  // top/bottom inset for the divider line
 
 	// Frame size calculation.
-	frameBytesPerSample = 4  // bytes per pixel in the frame buffer (float32)
-	frameOverheadBytes  = 64 // fixed overhead bytes added to each frame
+	frameOverheadBytes = 64 // fixed overhead bytes added to each frame
 
 	// Effective camera interval when none is configured (≈25 fps).
 	defaultCameraInterval = 40 * time.Millisecond
@@ -167,15 +166,8 @@ func (d *EmissivityDropdown) IsOpen() bool {
 	return d.open
 }
 
-// Layout draws the dropdown overlay and returns the selected index, or -1 if none.
-func (d *EmissivityDropdown) Layout(gtx layout.Context, th *material.Theme, currentIdx int) int {
-	if !d.open {
-		return -1
-	}
-
-	selected := -1
-
-	// Handle Escape to close
+// dismissOnEscape closes the dropdown if Escape is pressed and returns true.
+func (d *EmissivityDropdown) dismissOnEscape(gtx layout.Context) bool {
 	for {
 		inputEv, ok := gtx.Source.Event(key.Filter{Name: key.NameEscape})
 		if !ok {
@@ -184,15 +176,20 @@ func (d *EmissivityDropdown) Layout(gtx layout.Context, th *material.Theme, curr
 		if keyEv, ok := inputEv.(key.Event); ok && keyEv.State == key.Press {
 			d.Close()
 
-			return -1
+			return true
 		}
 	}
 
-	// Dismiss on click outside — we draw a transparent backdrop
+	return false
+}
+
+// dismissOnBackdropClick closes the dropdown if the transparent backdrop is clicked and returns true.
+func (d *EmissivityDropdown) dismissOnBackdropClick(gtx layout.Context) bool {
 	backdropTag := &d.tag
 	area := clip.Rect{Max: gtx.Constraints.Max}.Push(gtx.Ops)
 	event.Op(gtx.Ops, backdropTag)
 	area.Pop()
+
 	for {
 		inputEv, ok := gtx.Source.Event(pointer.Filter{
 			Target: backdropTag,
@@ -204,9 +201,24 @@ func (d *EmissivityDropdown) Layout(gtx layout.Context, th *material.Theme, curr
 		if ptrEv, ok := inputEv.(pointer.Event); ok && ptrEv.Kind == pointer.Press {
 			d.Close()
 
-			return -1
+			return true
 		}
 	}
+
+	return false
+}
+
+// Layout draws the dropdown overlay and returns the selected index, or -1 if none.
+func (d *EmissivityDropdown) Layout(gtx layout.Context, theme *material.Theme, currentIdx int) int {
+	if !d.open {
+		return -1
+	}
+
+	if d.dismissOnEscape(gtx) || d.dismissOnBackdropClick(gtx) {
+		return -1
+	}
+
+	selected := -1
 
 	// Scroll to current selection if requested
 	if d.scrollTo >= 0 {
@@ -246,88 +258,15 @@ func (d *EmissivityDropdown) Layout(gtx layout.Context, th *material.Theme, curr
 
 	// Scrollable list of rows (headers + items)
 	gtx.Constraints = layout.Exact(image.Pt(dropW, dropH))
-	listStyle := material.List(th, &d.list)
-	headerColor := color.NRGBA{R: 140, G: 160, B: 200, A: 255}
-	lightGray := color.NRGBA{R: 220, G: 220, B: 220, A: 255}
-	dimGray := color.NRGBA{R: 160, G: 160, B: 160, A: 255}
+	listStyle := material.List(theme, &d.list)
+	palette := epsDropdownPalette{
+		header:    color.NRGBA{R: 140, G: 160, B: 200, A: 255},
+		lightGray: color.NRGBA{R: 220, G: 220, B: 220, A: 255},
+		dimGray:   color.NRGBA{R: 160, G: 160, B: 160, A: 255},
+	}
 
 	listStyle.Layout(gtx, nRows, func(gtx layout.Context, rowIdx int) layout.Dimensions {
-		row := d.rows[rowIdx]
-
-		if row.isHeader {
-			// Category header — not clickable
-			return layout.Inset{
-				Left: unit.Dp(dropdownHeaderInsetDp), Right: unit.Dp(dropdownHeaderInsetDp),
-				Top: unit.Dp(dropdownHeaderTopPadDp), Bottom: unit.Dp(bufPanelHeaderBotDp),
-			}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-				lbl := material.Caption(th, row.category)
-				lbl.Color = headerColor
-				lbl.Font.Weight = font.Bold
-
-				return lbl.Layout(gtx)
-			})
-		}
-
-		// Preset item
-		presetIdx := row.presetIndex
-		preset := colorize.EmissivityPresets[presetIdx]
-
-		if d.items[presetIdx].Clicked(gtx) {
-			selected = presetIdx
-			d.Close()
-		}
-
-		isSelected := presetIdx == currentIdx
-		isHovered := d.items[presetIdx].Hovered()
-
-		bgColor := color.NRGBA{A: 0}
-		if isSelected {
-			bgColor = color.NRGBA{R: 60, G: 90, B: 160, A: 255}
-		} else if isHovered {
-			bgColor = color.NRGBA{R: 55, G: 55, B: 55, A: 255}
-		}
-
-		return d.items[presetIdx].Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-			return layout.Stack{}.Layout(gtx,
-				layout.Expanded(func(gtx layout.Context) layout.Dimensions {
-					if bgColor.A > 0 {
-						defer clip.Rect{Max: gtx.Constraints.Min}.Push(gtx.Ops).Pop()
-						paint.Fill(gtx.Ops, bgColor)
-					}
-
-					return layout.Dimensions{Size: gtx.Constraints.Min}
-				}),
-				layout.Stacked(func(gtx layout.Context) layout.Dimensions {
-					return layout.Inset{
-						Left: unit.Dp(dropdownItemLeftInsetDp), Right: unit.Dp(dropdownItemRightInsetDp),
-						Top: unit.Dp(dropdownItemVInsetDp), Bottom: unit.Dp(dropdownItemVInsetDp),
-					}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-						return layout.Flex{Axis: layout.Horizontal, Spacing: layout.SpaceBetween}.Layout(gtx,
-							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-								lbl := material.Body2(th, preset.Name)
-								lbl.Color = lightGray
-								if isSelected {
-									lbl.Color = color.NRGBA{R: 255, G: 255, B: 255, A: 255}
-								}
-
-								return lbl.Layout(gtx)
-							}),
-							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-								txt := fmt.Sprintf("%.2f", preset.Emissivity)
-								lbl := material.Body2(th, txt)
-								lbl.Color = dimGray
-								if isSelected {
-									lbl.Color = color.NRGBA{R: 200, G: 200, B: 255, A: 255}
-								}
-								lbl.Alignment = text.End
-
-								return lbl.Layout(gtx)
-							}),
-						)
-					})
-				}),
-			)
-		})
+		return d.layoutDropdownRow(gtx, theme, d.rows[rowIdx], currentIdx, &selected, palette)
 	})
 
 	// Border
@@ -341,6 +280,92 @@ func (d *EmissivityDropdown) Layout(gtx layout.Context, th *material.Theme, curr
 	offsetOp.Pop()
 
 	return selected
+}
+
+// epsDropdownPalette holds the colors used when rendering dropdown rows.
+type epsDropdownPalette struct {
+	header    color.NRGBA
+	lightGray color.NRGBA
+	dimGray   color.NRGBA
+}
+
+// layoutDropdownRow renders a single row (header or preset item) in the emissivity dropdown.
+func (d *EmissivityDropdown) layoutDropdownRow(
+	gtx layout.Context, theme *material.Theme, row dropdownRow,
+	currentIdx int, selected *int, pal epsDropdownPalette,
+) layout.Dimensions {
+	if row.isHeader {
+		return layout.Inset{
+			Left: unit.Dp(dropdownHeaderInsetDp), Right: unit.Dp(dropdownHeaderInsetDp),
+			Top: unit.Dp(dropdownHeaderTopPadDp), Bottom: unit.Dp(bufPanelHeaderBotDp),
+		}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+			lbl := material.Caption(theme, row.category)
+			lbl.Color = pal.header
+			lbl.Font.Weight = font.Bold
+
+			return lbl.Layout(gtx)
+		})
+	}
+
+	presetIdx := row.presetIndex
+	preset := colorize.EmissivityPresets[presetIdx]
+
+	if d.items[presetIdx].Clicked(gtx) {
+		*selected = presetIdx
+		d.Close()
+	}
+
+	isSelected := presetIdx == currentIdx
+	isHovered := d.items[presetIdx].Hovered()
+
+	bgColor := color.NRGBA{A: 0}
+	if isSelected {
+		bgColor = color.NRGBA{R: 60, G: 90, B: 160, A: 255}
+	} else if isHovered {
+		bgColor = color.NRGBA{R: 55, G: 55, B: 55, A: 255}
+	}
+
+	return d.items[presetIdx].Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+		return layout.Stack{}.Layout(gtx,
+			layout.Expanded(func(gtx layout.Context) layout.Dimensions {
+				if bgColor.A > 0 {
+					defer clip.Rect{Max: gtx.Constraints.Min}.Push(gtx.Ops).Pop()
+					paint.Fill(gtx.Ops, bgColor)
+				}
+
+				return layout.Dimensions{Size: gtx.Constraints.Min}
+			}),
+			layout.Stacked(func(gtx layout.Context) layout.Dimensions {
+				return layout.Inset{
+					Left: unit.Dp(dropdownItemLeftInsetDp), Right: unit.Dp(dropdownItemRightInsetDp),
+					Top: unit.Dp(dropdownItemVInsetDp), Bottom: unit.Dp(dropdownItemVInsetDp),
+				}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+					return layout.Flex{Axis: layout.Horizontal, Spacing: layout.SpaceBetween}.Layout(gtx,
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							lbl := material.Body2(theme, preset.Name)
+							lbl.Color = pal.lightGray
+							if isSelected {
+								lbl.Color = color.NRGBA{R: 255, G: 255, B: 255, A: 255}
+							}
+
+							return lbl.Layout(gtx)
+						}),
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							txt := fmt.Sprintf("%.2f", preset.Emissivity)
+							lbl := material.Body2(theme, txt)
+							lbl.Color = pal.dimGray
+							if isSelected {
+								lbl.Color = color.NRGBA{R: 200, G: 200, B: 255, A: 255}
+							}
+							lbl.Alignment = text.End
+
+							return lbl.Layout(gtx)
+						}),
+					)
+				})
+			}),
+		)
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -473,14 +498,8 @@ func formatDuration(dur time.Duration) string {
 	return fmt.Sprintf("%.1f days", dur.Hours()/hoursPerDay)
 }
 
-// Layout draws the panel overlay. Returns a result indicating what changed.
-func (p *BufferPanel) Layout(gtx layout.Context, th *material.Theme, currentBytes int64, currentInterval time.Duration, frameBytesPerPixel int, sensorPixels int) BufferPanelResult {
-	var res BufferPanelResult
-	if !p.open {
-		return res
-	}
-
-	// Handle Escape
+// panelDismissOnEscape closes the panel if Escape is pressed and returns true.
+func (p *BufferPanel) panelDismissOnEscape(gtx layout.Context) bool {
 	for {
 		ev, ok := gtx.Source.Event(key.Filter{Name: key.NameEscape})
 		if !ok {
@@ -489,15 +508,20 @@ func (p *BufferPanel) Layout(gtx layout.Context, th *material.Theme, currentByte
 		if ke, ok := ev.(key.Event); ok && ke.State == key.Press {
 			p.Close()
 
-			return res
+			return true
 		}
 	}
 
-	// Backdrop dismiss
+	return false
+}
+
+// panelDismissOnBackdropClick closes the panel if the backdrop is clicked and returns true.
+func (p *BufferPanel) panelDismissOnBackdropClick(gtx layout.Context) bool {
 	backdropTag := &p.tag
 	area := clip.Rect{Max: gtx.Constraints.Max}.Push(gtx.Ops)
 	event.Op(gtx.Ops, backdropTag)
 	area.Pop()
+
 	for {
 		ev, ok := gtx.Source.Event(pointer.Filter{Target: backdropTag, Kinds: pointer.Press})
 		if !ok {
@@ -506,12 +530,30 @@ func (p *BufferPanel) Layout(gtx layout.Context, th *material.Theme, currentByte
 		if pe, ok := ev.(pointer.Event); ok && pe.Kind == pointer.Press {
 			p.Close()
 
-			return res
+			return true
 		}
 	}
 
+	return false
+}
+
+// Layout draws the panel overlay. Returns a result indicating what changed.
+func (p *BufferPanel) Layout(
+	gtx layout.Context, theme *material.Theme,
+	currentBytes int64, currentInterval time.Duration,
+	frameBytesPerPixel int, sensorPixels int,
+) BufferPanelResult {
+	var res BufferPanelResult
+	if !p.open {
+		return res
+	}
+
+	if p.panelDismissOnEscape(gtx) || p.panelDismissOnBackdropClick(gtx) {
+		return res
+	}
+
 	// Compute estimates
-	frameBytes := int64(sensorPixels)*frameBytesPerSample + frameOverheadBytes
+	frameBytes := int64(sensorPixels)*int64(frameBytesPerPixel) + frameOverheadBytes
 	maxFrames := currentBytes / frameBytes
 	if maxFrames < 1 {
 		maxFrames = 1
@@ -551,230 +593,40 @@ func (p *BufferPanel) Layout(gtx layout.Context, th *material.Theme, currentByte
 
 	gtx.Constraints = layout.Exact(image.Pt(panelW, panelH))
 
-	headerColor := color.NRGBA{R: 140, G: 160, B: 200, A: 255}
-	lightGray := color.NRGBA{R: 220, G: 220, B: 220, A: 255}
-	dimGray := color.NRGBA{R: 160, G: 160, B: 160, A: 255}
-	accentGreen := color.NRGBA{R: 100, G: 220, B: 140, A: 255}
+	pal := bufPanelPalette{
+		header:      color.NRGBA{R: 140, G: 160, B: 200, A: 255},
+		lightGray:   color.NRGBA{R: 220, G: 220, B: 220, A: 255},
+		dimGray:     color.NRGBA{R: 160, G: 160, B: 160, A: 255},
+		accentGreen: color.NRGBA{R: 100, G: 220, B: 140, A: 255},
+	}
 
 	curSizeIdx := p.sizeIdx(currentBytes)
 	curRateIdx := p.rateIdx(currentInterval)
 
 	layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-		// Header: available memory + time estimate
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			hdrInset := layout.Inset{
-				Left:   unit.Dp(bufPanelHInsetDp),
-				Right:  unit.Dp(bufPanelHInsetDp),
-				Top:    unit.Dp(bufPanelHdrTopInsetDp),
-				Bottom: unit.Dp(bufPanelDivVInsetDp),
-			}
-
-			return hdrInset.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-				return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						lbl := material.Body1(th, "Buffer Settings")
-						lbl.Color = lightGray
-						lbl.Font.Weight = font.Bold
-
-						return lbl.Layout(gtx)
-					}),
-					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						divInset := layout.Inset{Top: unit.Dp(dropdownDividerInsetDp)}
-
-						return divInset.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-							txt := fmt.Sprintf("Available RAM: %s    |    Coverage: ≈ %s", availStr, formatDuration(coverage))
-							lbl := material.Body2(th, txt)
-							lbl.Color = accentGreen
-
-							return lbl.Layout(gtx)
-						})
-					}),
-				)
-			})
+			return p.layoutPanelHeader(gtx, theme, availStr, coverage, pal)
 		}),
-		// Buffer size section
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			sizeHdrInset := layout.Inset{
-				Left:   unit.Dp(bufPanelHInsetDp),
-				Top:    unit.Dp(dropdownHeaderTopPadDp),
-				Bottom: unit.Dp(bufPanelSectionVInsetDp),
-			}
-
-			return sizeHdrInset.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-				lbl := material.Caption(th, "BUFFER SIZE")
-				lbl.Color = headerColor
-				lbl.Font.Weight = font.Bold
-
-				return lbl.Layout(gtx)
-			})
+			return p.layoutSectionHeader(gtx, theme, "BUFFER SIZE", pal.header)
 		}),
 		layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-			listStyle := material.List(th, &p.sizeList)
-			nRows := len(bufSizePresets)
-
-			return listStyle.Layout(gtx, nRows, func(gtx layout.Context, idx int) layout.Dimensions {
-				preset := bufSizePresets[idx]
-
-				if p.sizeItems[idx].Clicked(gtx) {
-					res.SizeChanged = true
-					res.NewBytes = preset.Bytes
-					p.Close()
-				}
-
-				isSelected := idx == curSizeIdx
-				isHovered := p.sizeItems[idx].Hovered()
-
-				// Annotate with warning if exceeds available
-				label := preset.Label
-				if avail > 0 && preset.Bytes > avail {
-					label += "  (exceeds available)"
-				}
-
-				bgColor := color.NRGBA{A: 0}
-				if isSelected {
-					bgColor = color.NRGBA{R: 60, G: 90, B: 160, A: 255}
-				} else if isHovered {
-					bgColor = color.NRGBA{R: 55, G: 55, B: 55, A: 255}
-				}
-
-				return p.sizeItems[idx].Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-					return layout.Stack{}.Layout(gtx,
-						layout.Expanded(func(gtx layout.Context) layout.Dimensions {
-							if bgColor.A > 0 {
-								defer clip.Rect{Max: gtx.Constraints.Min}.Push(gtx.Ops).Pop()
-								paint.Fill(gtx.Ops, bgColor)
-							}
-
-							return layout.Dimensions{Size: gtx.Constraints.Min}
-						}),
-						layout.Stacked(func(gtx layout.Context) layout.Dimensions {
-							return layout.Inset{
-								Left: unit.Dp(bufPanelItemLInsetDp), Right: unit.Dp(bufPanelItemRInsetDp),
-								Top: unit.Dp(bufPanelItemVInsetDp), Bottom: unit.Dp(bufPanelItemVInsetDp),
-							}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-								lbl := material.Body2(th, label)
-								if avail > 0 && preset.Bytes > avail {
-									lbl.Color = dimGray
-								} else {
-									lbl.Color = lightGray
-								}
-								if isSelected {
-									lbl.Color = color.NRGBA{R: 255, G: 255, B: 255, A: 255}
-								}
-
-								return lbl.Layout(gtx)
-							})
-						}),
-					)
+			return material.List(theme, &p.sizeList).Layout(gtx, len(bufSizePresets),
+				func(gtx layout.Context, idx int) layout.Dimensions {
+					return p.layoutSizeRow(gtx, theme, idx, curSizeIdx, avail, &res, pal)
 				})
-			})
 		}),
-		// Divider
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			divInset := layout.Inset{
-				Left:   unit.Dp(bufPanelHInsetDp),
-				Right:  unit.Dp(bufPanelHInsetDp),
-				Top:    unit.Dp(bufPanelDivVInsetDp),
-				Bottom: unit.Dp(bufPanelDivVInsetDp),
-			}
-
-			return divInset.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-				size := image.Pt(gtx.Constraints.Max.X, gtx.Dp(unit.Dp(1)))
-				defer clip.Rect{Max: size}.Push(gtx.Ops).Pop()
-				paint.Fill(gtx.Ops, color.NRGBA{R: 70, G: 70, B: 70, A: 255})
-
-				return layout.Dimensions{Size: size}
-			})
+			return p.layoutDivider(gtx)
 		}),
-		// Sample rate section
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			rateHdrInset := layout.Inset{
-				Left:   unit.Dp(bufPanelHInsetDp),
-				Top:    unit.Dp(bufPanelSectionVInsetDp),
-				Bottom: unit.Dp(bufPanelSectionVInsetDp),
-			}
-
-			return rateHdrInset.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-				lbl := material.Caption(th, "SAMPLE RATE")
-				lbl.Color = headerColor
-				lbl.Font.Weight = font.Bold
-
-				return lbl.Layout(gtx)
-			})
+			return p.layoutSectionHeader(gtx, theme, "SAMPLE RATE", pal.header)
 		}),
 		layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-			listStyle := material.List(th, &p.rateList)
-			nRows := len(sampleRatePresets)
-
-			return listStyle.Layout(gtx, nRows, func(gtx layout.Context, idx int) layout.Dimensions {
-				ratePreset := sampleRatePresets[idx]
-
-				if p.rateItems[idx].Clicked(gtx) {
-					res.IntervalChanged = true
-					res.NewInterval = ratePreset.Interval
-					p.Close()
-				}
-
-				isSelected := idx == curRateIdx
-				isHovered := p.rateItems[idx].Hovered()
-
-				bgColor := color.NRGBA{A: 0}
-				if isSelected {
-					bgColor = color.NRGBA{R: 60, G: 90, B: 160, A: 255}
-				} else if isHovered {
-					bgColor = color.NRGBA{R: 55, G: 55, B: 55, A: 255}
-				}
-
-				// Compute coverage at this rate
-				eff := ratePreset.Interval
-				if eff == 0 {
-					eff = defaultCameraInterval
-				}
-				cov := time.Duration(maxFrames) * eff
-
-				covLabel := formatDuration(cov)
-
-				return p.rateItems[idx].Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-					return layout.Stack{}.Layout(gtx,
-						layout.Expanded(func(gtx layout.Context) layout.Dimensions {
-							if bgColor.A > 0 {
-								defer clip.Rect{Max: gtx.Constraints.Min}.Push(gtx.Ops).Pop()
-								paint.Fill(gtx.Ops, bgColor)
-							}
-
-							return layout.Dimensions{Size: gtx.Constraints.Min}
-						}),
-						layout.Stacked(func(gtx layout.Context) layout.Dimensions {
-							return layout.Inset{
-								Left: unit.Dp(bufPanelItemLInsetDp), Right: unit.Dp(bufPanelItemRInsetDp),
-								Top: unit.Dp(bufPanelItemVInsetDp), Bottom: unit.Dp(bufPanelItemVInsetDp),
-							}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-								return layout.Flex{Axis: layout.Horizontal, Spacing: layout.SpaceBetween}.Layout(gtx,
-									layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-										lbl := material.Body2(th, ratePreset.Label)
-										lbl.Color = lightGray
-										if isSelected {
-											lbl.Color = color.NRGBA{R: 255, G: 255, B: 255, A: 255}
-										}
-
-										return lbl.Layout(gtx)
-									}),
-									layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-										lbl := material.Body2(th, "≈ "+covLabel)
-										lbl.Color = dimGray
-										if isSelected {
-											lbl.Color = color.NRGBA{R: 200, G: 200, B: 255, A: 255}
-										}
-										lbl.Alignment = text.End
-
-										return lbl.Layout(gtx)
-									}),
-								)
-							})
-						}),
-					)
+			return material.List(theme, &p.rateList).Layout(gtx, len(sampleRatePresets),
+				func(gtx layout.Context, idx int) layout.Dimensions {
+					return p.layoutRateRow(gtx, theme, idx, curRateIdx, maxFrames, &res, pal)
 				})
-			})
 		}),
 	)
 
@@ -789,6 +641,215 @@ func (p *BufferPanel) Layout(gtx layout.Context, th *material.Theme, currentByte
 	offsetOp.Pop()
 
 	return res
+}
+
+// bufPanelPalette holds the colors used when rendering the buffer panel.
+type bufPanelPalette struct {
+	header      color.NRGBA
+	lightGray   color.NRGBA
+	dimGray     color.NRGBA
+	accentGreen color.NRGBA
+}
+
+// layoutPanelHeader renders the title + RAM / coverage info row.
+func (p *BufferPanel) layoutPanelHeader(
+	gtx layout.Context, theme *material.Theme,
+	availStr string, coverage time.Duration, pal bufPanelPalette,
+) layout.Dimensions {
+	hdrInset := layout.Inset{
+		Left:   unit.Dp(bufPanelHInsetDp),
+		Right:  unit.Dp(bufPanelHInsetDp),
+		Top:    unit.Dp(bufPanelHdrTopInsetDp),
+		Bottom: unit.Dp(bufPanelDivVInsetDp),
+	}
+
+	return hdrInset.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+		return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				lbl := material.Body1(theme, "Buffer Settings")
+				lbl.Color = pal.lightGray
+				lbl.Font.Weight = font.Bold
+
+				return lbl.Layout(gtx)
+			}),
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				return layout.Inset{Top: unit.Dp(dropdownDividerInsetDp)}.Layout(gtx,
+					func(gtx layout.Context) layout.Dimensions {
+						txt := fmt.Sprintf("Available RAM: %s    |    Coverage: ≈ %s", availStr, formatDuration(coverage))
+						lbl := material.Body2(theme, txt)
+						lbl.Color = pal.accentGreen
+
+						return lbl.Layout(gtx)
+					})
+			}),
+		)
+	})
+}
+
+// layoutSectionHeader renders a section-title row ("BUFFER SIZE" / "SAMPLE RATE").
+func (p *BufferPanel) layoutSectionHeader(
+	gtx layout.Context, theme *material.Theme, title string, col color.NRGBA,
+) layout.Dimensions {
+	return layout.Inset{
+		Left:   unit.Dp(bufPanelHInsetDp),
+		Top:    unit.Dp(dropdownHeaderTopPadDp),
+		Bottom: unit.Dp(bufPanelSectionVInsetDp),
+	}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+		lbl := material.Caption(theme, title)
+		lbl.Color = col
+		lbl.Font.Weight = font.Bold
+
+		return lbl.Layout(gtx)
+	})
+}
+
+// layoutDivider renders a thin horizontal separator line.
+func (p *BufferPanel) layoutDivider(gtx layout.Context) layout.Dimensions {
+	return layout.Inset{
+		Left:   unit.Dp(bufPanelHInsetDp),
+		Right:  unit.Dp(bufPanelHInsetDp),
+		Top:    unit.Dp(bufPanelDivVInsetDp),
+		Bottom: unit.Dp(bufPanelDivVInsetDp),
+	}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+		size := image.Pt(gtx.Constraints.Max.X, gtx.Dp(unit.Dp(1)))
+		defer clip.Rect{Max: size}.Push(gtx.Ops).Pop()
+		paint.Fill(gtx.Ops, color.NRGBA{R: 70, G: 70, B: 70, A: 255})
+
+		return layout.Dimensions{Size: size}
+	})
+}
+
+// layoutSizeRow renders a single buffer-size preset row.
+func (p *BufferPanel) layoutSizeRow(
+	gtx layout.Context, theme *material.Theme,
+	idx, curSizeIdx int, avail int64, res *BufferPanelResult, pal bufPanelPalette,
+) layout.Dimensions {
+	preset := bufSizePresets[idx]
+
+	if p.sizeItems[idx].Clicked(gtx) {
+		res.SizeChanged = true
+		res.NewBytes = preset.Bytes
+		p.Close()
+	}
+
+	isSelected := idx == curSizeIdx
+	isHovered := p.sizeItems[idx].Hovered()
+	exceeds := avail > 0 && preset.Bytes > avail
+
+	label := preset.Label
+	if exceeds {
+		label += "  (exceeds available)"
+	}
+
+	bgColor := color.NRGBA{A: 0}
+	if isSelected {
+		bgColor = color.NRGBA{R: 60, G: 90, B: 160, A: 255}
+	} else if isHovered {
+		bgColor = color.NRGBA{R: 55, G: 55, B: 55, A: 255}
+	}
+
+	return p.sizeItems[idx].Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+		return layout.Stack{}.Layout(gtx,
+			layout.Expanded(func(gtx layout.Context) layout.Dimensions {
+				if bgColor.A > 0 {
+					defer clip.Rect{Max: gtx.Constraints.Min}.Push(gtx.Ops).Pop()
+					paint.Fill(gtx.Ops, bgColor)
+				}
+
+				return layout.Dimensions{Size: gtx.Constraints.Min}
+			}),
+			layout.Stacked(func(gtx layout.Context) layout.Dimensions {
+				return layout.Inset{
+					Left: unit.Dp(bufPanelItemLInsetDp), Right: unit.Dp(bufPanelItemRInsetDp),
+					Top: unit.Dp(bufPanelItemVInsetDp), Bottom: unit.Dp(bufPanelItemVInsetDp),
+				}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+					lbl := material.Body2(theme, label)
+
+					switch {
+					case isSelected:
+						lbl.Color = color.NRGBA{R: 255, G: 255, B: 255, A: 255}
+					case exceeds:
+						lbl.Color = pal.dimGray
+					default:
+						lbl.Color = pal.lightGray
+					}
+
+					return lbl.Layout(gtx)
+				})
+			}),
+		)
+	})
+}
+
+// layoutRateRow renders a single sample-rate preset row.
+func (p *BufferPanel) layoutRateRow(
+	gtx layout.Context, theme *material.Theme,
+	idx, curRateIdx int, maxFrames int64, res *BufferPanelResult, pal bufPanelPalette,
+) layout.Dimensions {
+	ratePreset := sampleRatePresets[idx]
+
+	if p.rateItems[idx].Clicked(gtx) {
+		res.IntervalChanged = true
+		res.NewInterval = ratePreset.Interval
+		p.Close()
+	}
+
+	isSelected := idx == curRateIdx
+	isHovered := p.rateItems[idx].Hovered()
+
+	bgColor := color.NRGBA{A: 0}
+	if isSelected {
+		bgColor = color.NRGBA{R: 60, G: 90, B: 160, A: 255}
+	} else if isHovered {
+		bgColor = color.NRGBA{R: 55, G: 55, B: 55, A: 255}
+	}
+
+	eff := ratePreset.Interval
+	if eff == 0 {
+		eff = defaultCameraInterval
+	}
+	covLabel := formatDuration(time.Duration(maxFrames) * eff)
+
+	return p.rateItems[idx].Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+		return layout.Stack{}.Layout(gtx,
+			layout.Expanded(func(gtx layout.Context) layout.Dimensions {
+				if bgColor.A > 0 {
+					defer clip.Rect{Max: gtx.Constraints.Min}.Push(gtx.Ops).Pop()
+					paint.Fill(gtx.Ops, bgColor)
+				}
+
+				return layout.Dimensions{Size: gtx.Constraints.Min}
+			}),
+			layout.Stacked(func(gtx layout.Context) layout.Dimensions {
+				return layout.Inset{
+					Left: unit.Dp(bufPanelItemLInsetDp), Right: unit.Dp(bufPanelItemRInsetDp),
+					Top: unit.Dp(bufPanelItemVInsetDp), Bottom: unit.Dp(bufPanelItemVInsetDp),
+				}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+					return layout.Flex{Axis: layout.Horizontal, Spacing: layout.SpaceBetween}.Layout(gtx,
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							lbl := material.Body2(theme, ratePreset.Label)
+							lbl.Color = pal.lightGray
+							if isSelected {
+								lbl.Color = color.NRGBA{R: 255, G: 255, B: 255, A: 255}
+							}
+
+							return lbl.Layout(gtx)
+						}),
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							lbl := material.Body2(theme, "≈ "+covLabel)
+							lbl.Color = pal.dimGray
+							if isSelected {
+								lbl.Color = color.NRGBA{R: 200, G: 200, B: 255, A: 255}
+							}
+							lbl.Alignment = text.End
+
+							return lbl.Layout(gtx)
+						}),
+					)
+				})
+			}),
+		)
+	})
 }
 
 // humanSizeDropdown formats bytes as human-readable (for use inside dropdown).

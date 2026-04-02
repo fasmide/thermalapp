@@ -102,6 +102,12 @@ const (
 	lumWeightB = 0.114 // blue channel luminance weight
 )
 
+// spotSnap is a thread-safe snapshot of a Spot's mutable state, used during layout.
+type spotSnap struct {
+	sp    *Spot
+	state SpotState
+}
+
 // App holds the UI and shared state.
 type App struct {
 	Window *app.Window
@@ -224,6 +230,42 @@ func (a *App) SetPlayer(p *recording.Player) {
 	a.Window.Option(app.Title(fmt.Sprintf("P3 Thermal — Playback (%d frames)", p.FrameCount())))
 }
 
+// updateBuffer adds the colorized celsius frame to the appropriate ring or
+// playback buffer, resizing if the image dimensions changed.
+func (a *App) updateBuffer(result *colorize.Result) {
+	imgW := result.RGBA.Bounds().Dx()
+	imgH := result.RGBA.Bounds().Dy()
+	if a.playBuf != nil {
+		frameIdx := a.player.FrameIndex() - 1
+		if frameIdx < 0 {
+			frameIdx = 0
+		}
+		if bw, bh := a.playBuf.Dims(); bw != imgW || bh != imgH {
+			a.playBuf.Resize(imgW, imgH)
+		}
+		a.playBuf.Add(frameIdx, result.Celsius, a.player.FrameTime())
+	} else {
+		if bw, bh := a.frameBuf.Dims(); bw != imgW || bh != imgH {
+			a.frameBuf.Resize(imgW, imgH)
+		}
+		a.frameBuf.Add(result.Celsius, time.Now())
+	}
+}
+
+// updateEMASpot updates spot's position using EMA (or initializes it on first frame)
+// and records the temperature at its position.
+func (a *App) updateEMASpot(spot *Spot, newX, newY float32, alpha float32, celsius []float32, imgW int) {
+	if !a.smInited.Load() {
+		spot.SetPosition(newX, newY, true)
+	} else {
+		spot.UpdateEMA(newX, newY, alpha)
+	}
+	sx, sy := spot.GetPosition()
+	if idx := int(sy)*imgW + int(sx); idx >= 0 && idx < len(celsius) {
+		spot.Record(celsius[idx])
+	}
+}
+
 func (a *App) UpdateFrame(frame *camera.Frame) {
 	a.mu.Lock()
 	params := a.params
@@ -247,91 +289,47 @@ func (a *App) UpdateFrame(frame *camera.Frame) {
 	a.mu.Unlock()
 
 	imgW := result.RGBA.Bounds().Dx()
+	a.updateBuffer(result)
 
-	// Add to the appropriate buffer
-	if a.playBuf != nil {
-		// Playback mode: cache by frame index
-		frameIdx := a.player.FrameIndex() - 1
-		if frameIdx < 0 {
-			frameIdx = 0
-		}
-		if bw, bh := a.playBuf.Dims(); bw != imgW || bh != result.RGBA.Bounds().Dy() {
-			a.playBuf.Resize(imgW, result.RGBA.Bounds().Dy())
-		}
-		a.playBuf.Add(frameIdx, result.Celsius, a.player.FrameTime())
-	} else {
-		// Live mode: ring buffer
-		if bw, bh := a.frameBuf.Dims(); bw != imgW || bh != result.RGBA.Bounds().Dy() {
-			a.frameBuf.Resize(imgW, result.RGBA.Bounds().Dy())
-		}
-		a.frameBuf.Add(result.Celsius, time.Now())
-	}
-
-	// Update spot positions and record temperatures
+	// Update EMA-smoothed min/max spots
 	const alpha = 0.15
-
-	// Spot 0: min
-	minSpot := a.spots[0]
-	newMinX, newMinY := float32(result.MinX), float32(result.MinY)
-	if !a.smInited.Load() {
-		minSpot.SetPosition(newMinX, newMinY, true)
-	} else {
-		minSpot.UpdateEMA(newMinX, newMinY, alpha)
-	}
-	mx, my := minSpot.GetPosition()
-	minIdx := int(my)*imgW + int(mx)
-	if minIdx >= 0 && minIdx < len(result.Celsius) {
-		minSpot.Record(result.Celsius[minIdx])
-	}
-
-	// Spot 1: max
-	maxSpot := a.spots[1]
-	newMaxX, newMaxY := float32(result.MaxX), float32(result.MaxY)
-	if !a.smInited.Load() {
-		maxSpot.SetPosition(newMaxX, newMaxY, true)
-	} else {
-		maxSpot.UpdateEMA(newMaxX, newMaxY, alpha)
-	}
-	mxx, mxy := maxSpot.GetPosition()
-	maxIdx := int(mxy)*imgW + int(mxx)
-	if maxIdx >= 0 && maxIdx < len(result.Celsius) {
-		maxSpot.Record(result.Celsius[maxIdx])
-	}
-
+	a.updateEMASpot(a.spots[0], float32(result.MinX), float32(result.MinY), alpha, result.Celsius, imgW)
+	a.updateEMASpot(a.spots[1], float32(result.MaxX), float32(result.MaxY), alpha, result.Celsius, imgW)
 	a.smInited.Store(true)
 
-	// Spot 2: cursor — recorded in handlePointer, just read temp here if active
+	a.updateCursorSpot(result, imgW)
+	a.updateUserSpots(result, imgW)
+	a.invalidateGraphs()
+}
+
+// updateCursorSpot refreshes the cursor spot temperature from the current result.
+func (a *App) updateCursorSpot(result *colorize.Result, imgW int) {
 	cursorSpot := a.spots[spotCursorIdx]
-	cs := cursorSpot.GetState()
-	if cs.Active {
-		cIdx := int(cs.Y)*imgW + int(cs.X)
-		if cIdx >= 0 && cIdx < len(result.Celsius) {
-			cursorSpot.SetLastTemp(result.Celsius[cIdx])
-		}
+	cursorState := cursorSpot.GetState()
+
+	if !cursorState.Active {
+		return
 	}
 
-	// User spots (3+)
+	if cIdx := int(cursorState.Y)*imgW + int(cursorState.X); cIdx >= 0 && cIdx < len(result.Celsius) {
+		cursorSpot.SetLastTemp(result.Celsius[cIdx])
+	}
+}
+
+// updateUserSpots refreshes temperature readings for all user-placed spots.
+func (a *App) updateUserSpots(result *colorize.Result, imgW int) {
 	a.mu.Lock()
 	userSpots := make([]*Spot, len(a.spots[firstUserSpotIdx:]))
 	copy(userSpots, a.spots[firstUserSpotIdx:])
 	a.mu.Unlock()
+
 	for _, sp := range userSpots {
 		st := sp.GetState()
-		idx := int(st.Y)*imgW + int(st.X)
-		if idx >= 0 && idx < len(result.Celsius) {
+		if idx := int(st.Y)*imgW + int(st.X); idx >= 0 && idx < len(result.Celsius) {
 			temp := sp.CorrectedTemp(result.Celsius[idx], result.GlobalEmissivity, result.AmbientC)
 			sp.SetLastTemp(temp)
 		}
 	}
-
-	// Invalidate graph windows
-	for _, gw := range a.graphs {
-		if !gw.IsClosed() {
-			gw.Invalidate()
-		}
-	}
-
-	a.Window.Invalidate()
 }
 
 // refreshDisplay re-colorizes the last raw frame with the current params.
@@ -393,6 +391,183 @@ func (a *App) Run() error {
 	}
 }
 
+// handleEscKey handles Escape: close dropdown/panel/deselect/quit.
+func (a *App) handleEscKey(keyName key.Name) {
+	switch {
+	case keyName == key.NameEscape && a.epsDropdown.IsOpen():
+		a.epsDropdown.Close()
+	case keyName == key.NameEscape && a.bufPanel.IsOpen():
+		a.bufPanel.Close()
+	case keyName == key.NameEscape && a.selectedSpot >= 0:
+		a.selectedSpot = -1
+	default:
+		a.Window.Perform(system.ActionClose)
+	}
+}
+
+// handleEKey cycles emissivity for the selected spot (or globally).
+func (a *App) handleEKey(backward bool) {
+	nPresets := len(colorize.EmissivityPresets)
+	a.mu.Lock()
+
+	if a.selectedSpot >= 0 && a.selectedSpot < len(a.spots) {
+		a.cycleSpotEmissivity(a.spots[a.selectedSpot], backward, nPresets)
+	} else {
+		a.cycleGlobalEmissivity(backward, nPresets)
+	}
+
+	a.toastExpiry = time.Now().Add(toastShortDuration)
+	a.mu.Unlock()
+	a.refreshDisplay()
+}
+
+// cycleSpotEmissivity advances or reverses the emissivity preset for a single spot.
+// Caller must hold a.mu.
+func (a *App) cycleSpotEmissivity(selSpot *Spot, backward bool, nPresets int) {
+	_, curIdx := selSpot.GetEmissivity()
+	if backward {
+		curIdx--
+		if curIdx < -1 {
+			curIdx = nPresets - 1
+		}
+	} else {
+		curIdx++
+		if curIdx >= nPresets {
+			curIdx = -1
+		}
+	}
+
+	if curIdx == -1 {
+		selSpot.SetEmissivity(0, -1)
+		a.toastMsg = fmt.Sprintf("Spot %d: ε = global", a.selectedSpot)
+	} else {
+		preset := colorize.EmissivityPresets[curIdx]
+		selSpot.SetEmissivity(preset.Emissivity, curIdx)
+		a.toastMsg = fmt.Sprintf("Spot %d: ε = %.2f  %s", a.selectedSpot, preset.Emissivity, preset.Name)
+	}
+}
+
+// cycleGlobalEmissivity advances or reverses the global emissivity preset.
+// Caller must hold a.mu.
+func (a *App) cycleGlobalEmissivity(backward bool, nPresets int) {
+	if backward {
+		a.emissivityIdx = (a.emissivityIdx - 1 + nPresets) % nPresets
+	} else {
+		a.emissivityIdx = (a.emissivityIdx + 1) % nPresets
+	}
+
+	preset := colorize.EmissivityPresets[a.emissivityIdx]
+	a.params.Emissivity = preset.Emissivity
+	a.toastMsg = fmt.Sprintf("ε = %.2f  %s", preset.Emissivity, preset.Name)
+}
+
+// handlePlayPause toggles playback and shows a toast.
+func (a *App) handlePlayPause() {
+	if a.player == nil {
+		return
+	}
+	paused := a.player.IsPaused()
+	a.player.SetPaused(!paused)
+	a.mu.Lock()
+	if !paused {
+		a.toastMsg = "Playback paused"
+	} else {
+		a.toastMsg = "Playback resumed"
+	}
+	a.toastExpiry = time.Now().Add(toastShortDuration)
+	a.mu.Unlock()
+}
+
+// dumpLastFrame dumps the last raw frame to disk in a goroutine.
+func (a *App) dumpLastFrame() {
+	a.mu.Lock()
+	frame := a.lastFrame
+	a.mu.Unlock()
+
+	if frame != nil {
+		go a.dumpFrame(frame)
+	}
+}
+
+// dumpScreenshot saves the current RGBA frame as a PNG in a goroutine.
+func (a *App) dumpScreenshot() {
+	a.mu.Lock()
+	snap := a.result
+	a.mu.Unlock()
+
+	if snap != nil && snap.RGBA != nil {
+		go a.saveScreenshot(snap.RGBA)
+	}
+}
+
+// seekBackward steps the player one frame backward.
+func (a *App) seekBackward() {
+	if a.player == nil {
+		return
+	}
+
+	idx := a.player.FrameIndex() - seekBackStep
+	if idx < 0 {
+		idx = 0
+	}
+
+	a.seekToFrame(idx)
+}
+
+// seekForward steps the player one frame forward.
+func (a *App) seekForward() {
+	if a.player != nil {
+		a.seekToFrame(a.player.FrameIndex())
+	}
+}
+
+// toggleGain switches the camera between high and low gain modes.
+func (a *App) toggleGain() {
+	if a.gainMode == camera.GainHigh {
+		a.gainMode = camera.GainLow
+	} else {
+		a.gainMode = camera.GainHigh
+	}
+	newGain := a.gainMode
+	go func() {
+		log.Printf("switching gain to %v", newGain)
+		if err := a.cam.SetGain(newGain); err != nil {
+			log.Printf("gain switch: %v", err)
+		}
+	}()
+}
+
+// closeUserSpotGraphs closes all graph windows for user spots (index >= 3)
+// and removes those spots. Caller must NOT hold a.mu.
+func (a *App) closeUserSpotGraphs() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	for idx, gw := range a.graphs {
+		if idx >= firstUserSpotIdx {
+			gw.mu.Lock()
+			gw.window.Perform(system.ActionClose)
+			gw.mu.Unlock()
+			delete(a.graphs, idx)
+		}
+	}
+
+	a.spots = a.spots[:firstUserSpotIdx]
+	a.selectedSpot = -1
+}
+
+// cycleAGC toggles between Hardware and Percentile AGC modes.
+func (a *App) cycleAGC() {
+	a.mu.Lock()
+	if a.params.Mode == colorize.AGCHardware {
+		a.params.Mode = colorize.AGCPercentile
+	} else {
+		a.params.Mode = colorize.AGCHardware
+	}
+	a.mu.Unlock()
+	a.refreshDisplay()
+}
+
 func (a *App) handleKeys(gtx layout.Context) {
 	// Register key filters
 	filters := []event.Filter{
@@ -438,194 +613,181 @@ func (a *App) handleKeys(gtx layout.Context) {
 			continue
 		}
 
-		switch keyEv.Name {
-		case "Q", key.NameEscape:
-			switch {
-			case keyEv.Name == key.NameEscape && a.epsDropdown.IsOpen():
-				a.epsDropdown.Close()
-			case keyEv.Name == key.NameEscape && a.bufPanel.IsOpen():
-				a.bufPanel.Close()
-			case keyEv.Name == key.NameEscape && a.selectedSpot >= 0:
-				a.selectedSpot = -1
-			default:
-				a.Window.Perform(system.ActionClose)
-			}
+		a.dispatchKeyEvent(keyEv)
+	}
+}
 
-		case "C":
-			a.mu.Lock()
-			a.params.Palette = a.params.Palette.Next()
-			a.mu.Unlock()
-			a.refreshDisplay()
+// dispatchKeyEvent routes a key press to the appropriate handler.
+// The high cyclomatic complexity here is inherent: the app has many key bindings.
+//
+//nolint:cyclop
+func (a *App) dispatchKeyEvent(keyEv key.Event) {
+	switch keyEv.Name {
+	case "Q", key.NameEscape:
+		a.handleEscKey(keyEv.Name)
+	case "C":
+		a.mu.Lock()
+		a.params.Palette = a.params.Palette.Next()
+		a.mu.Unlock()
+		a.refreshDisplay()
+	case "A":
+		a.cycleAGC()
+	case "G":
+		a.toggleGain()
+	case "S":
+		a.triggerShutter()
+	case "V":
+		a.showColorbar = !a.showColorbar
+	case "H":
+		a.showHelp = !a.showHelp
+	case "R":
+		a.rotation = (a.rotation + 1) % rotationCount
+		a.refreshDisplay()
+	case "T":
+		a.showLabels = !a.showLabels
+	case "E":
+		a.handleEKey(keyEv.Modifiers.Contain(key.ModShift))
+	case "X":
+		a.closeUserSpotGraphs()
+	case "0", "1", "2", "3", "4", "5", "6", "7", "8", "9":
+		a.toggleGraph(int(keyEv.Name[0] - '0'))
+	case "D":
+		a.dumpLastFrame()
+	case key.NameF5:
+		a.toggleRecording()
+	case "P", key.NameSpace:
+		a.handlePlayPause()
+	case key.NameLeftArrow:
+		a.seekBackward()
+	case key.NameRightArrow:
+		a.seekForward()
+	case key.NameF12:
+		a.dumpScreenshot()
+	}
+}
 
-		case "A":
-			a.mu.Lock()
-			switch a.params.Mode {
-			case colorize.AGCPercentile:
-				a.params.Mode = colorize.AGCHardware
-			case colorize.AGCHardware:
-				a.params.Mode = colorize.AGCPercentile
-			default:
-				a.params.Mode = colorize.AGCPercentile
-			}
-			a.mu.Unlock()
-			a.refreshDisplay()
+// triggerShutter fires the camera shutter in a background goroutine.
+func (a *App) triggerShutter() {
+	go func() {
+		if err := a.cam.TriggerShutter(); err != nil {
+			log.Printf("shutter: %v", err)
+		}
+	}()
+}
 
-		case "G":
-			if a.gainMode == camera.GainHigh {
-				a.gainMode = camera.GainLow
-			} else {
-				a.gainMode = camera.GainHigh
-			}
-			newGain := a.gainMode
-			go func() {
-				log.Printf("switching gain to %v", newGain)
-				if err := a.cam.SetGain(newGain); err != nil {
-					log.Printf("gain switch: %v", err)
-				}
-			}()
+// handlePointerMove updates the cursor spot position and temperature when the
+// pointer moves over the image area.
+func (a *App) handlePointerMove(ptrEv pointer.Event) {
+	a.cursorPos = ptrEv.Position
+	imgX := int((ptrEv.Position.X - float32(a.imgOffsetX)) / a.imgScale)
+	imgY := int((ptrEv.Position.Y - float32(a.imgOffsetY)) / a.imgScale)
 
-		case "S":
-			go func() {
-				if err := a.cam.TriggerShutter(); err != nil {
-					log.Printf("shutter: %v", err)
-				}
-			}()
+	a.mu.Lock()
+	res := a.result
+	a.mu.Unlock()
 
-		case "V":
-			a.showColorbar = !a.showColorbar
+	cursorSpot := a.spots[spotCursorIdx]
+	bounds := res != nil && imgX >= 0 && imgY >= 0 && imgX < res.RGBA.Bounds().Dx() && imgY < res.RGBA.Bounds().Dy()
+	if bounds {
+		cursorSpot.SetPosition(float32(imgX), float32(imgY), true)
+		imgW := res.RGBA.Bounds().Dx()
+		if cIdx := imgY*imgW + imgX; cIdx < len(res.Celsius) {
+			cursorSpot.SetLastTemp(res.Celsius[cIdx])
+		}
+	} else {
+		cursorSpot.SetActive(false)
+	}
 
-		case "H":
-			a.showHelp = !a.showHelp
+	a.mu.Lock()
+	cursorGW := a.graphs[spotCursorIdx]
+	a.mu.Unlock()
+	if cursorGW != nil && !cursorGW.IsClosed() {
+		cursorGW.Invalidate()
+	}
+}
 
-		case "R":
-			a.rotation = (a.rotation + 1) % rotationCount
-			a.refreshDisplay()
+// handlePointerShiftPress handles Shift+Click: select/deselect a user spot for
+// per-spot emissivity assignment.
+func (a *App) handlePointerShiftPress(imgX, imgY int) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 
-		case "T":
-			a.showLabels = !a.showLabels
+	found := -1
+	for spotIdx := firstUserSpotIdx; spotIdx < len(a.spots); spotIdx++ {
+		spX, spY := a.spots[spotIdx].GetPosition()
+		dx := int(spX) - imgX
+		dy := int(spY) - imgY
+		if dx*dx+dy*dy < spotHitRadiusSq {
+			found = spotIdx
 
-		case "E":
-			backward := keyEv.Modifiers.Contain(key.ModShift)
-			nPresets := len(colorize.EmissivityPresets)
-			a.mu.Lock()
-			if a.selectedSpot >= 0 && a.selectedSpot < len(a.spots) {
-				selSpot := a.spots[a.selectedSpot]
-				_, curIdx := selSpot.GetEmissivity()
-				if backward {
-					curIdx--
-					if curIdx < -1 {
-						curIdx = nPresets - 1
-					}
-				} else {
-					curIdx++
-					if curIdx >= nPresets {
-						curIdx = -1
-					}
-				}
-				if curIdx == -1 {
-					selSpot.SetEmissivity(0, -1)
-					a.toastMsg = fmt.Sprintf("Spot %d: ε = global", a.selectedSpot)
-				} else {
-					preset := colorize.EmissivityPresets[curIdx]
-					selSpot.SetEmissivity(preset.Emissivity, curIdx)
-					a.toastMsg = fmt.Sprintf("Spot %d: ε = %.2f  %s", a.selectedSpot, preset.Emissivity, preset.Name)
-				}
-			} else {
-				if backward {
-					a.emissivityIdx = (a.emissivityIdx - 1 + nPresets) % nPresets
-				} else {
-					a.emissivityIdx = (a.emissivityIdx + 1) % nPresets
-				}
-				preset := colorize.EmissivityPresets[a.emissivityIdx]
-				a.params.Emissivity = preset.Emissivity
-				a.toastMsg = fmt.Sprintf("ε = %.2f  %s", preset.Emissivity, preset.Name)
-			}
-			a.toastExpiry = time.Now().Add(toastShortDuration)
-			a.mu.Unlock()
-			a.refreshDisplay()
-
-		case "X":
-			a.mu.Lock()
-			// Close any graph windows for user spots (index >= 3)
-			for idx, gw := range a.graphs {
-				if idx >= firstUserSpotIdx {
-					gw.mu.Lock()
-					gw.window.Perform(system.ActionClose)
-					gw.mu.Unlock()
-					delete(a.graphs, idx)
-				}
-			}
-			a.spots = a.spots[:firstUserSpotIdx] // keep min, max, cursor
-			a.selectedSpot = -1
-			a.mu.Unlock()
-
-		case "0", "1", "2", "3", "4", "5", "6", "7", "8", "9":
-			idx := int(keyEv.Name[0] - '0')
-			a.toggleGraph(idx)
-
-		case "D":
-			a.mu.Lock()
-			frame := a.lastFrame
-			a.mu.Unlock()
-			if frame != nil {
-				go a.dumpFrame(frame)
-			}
-
-		case key.NameF5:
-			a.toggleRecording()
-
-		case "P":
-			if a.player != nil {
-				paused := a.player.IsPaused()
-				a.player.SetPaused(!paused)
-				a.mu.Lock()
-				if !paused {
-					a.toastMsg = "Playback paused"
-				} else {
-					a.toastMsg = "Playback resumed"
-				}
-				a.toastExpiry = time.Now().Add(toastShortDuration)
-				a.mu.Unlock()
-			}
-
-		case key.NameLeftArrow:
-			if a.player != nil {
-				idx := a.player.FrameIndex() - seekBackStep
-				if idx < 0 {
-					idx = 0
-				}
-				a.seekToFrame(idx)
-			}
-
-		case key.NameRightArrow:
-			if a.player != nil {
-				idx := a.player.FrameIndex()
-				a.seekToFrame(idx)
-			}
-
-		case key.NameSpace:
-			if a.player != nil {
-				paused := a.player.IsPaused()
-				a.player.SetPaused(!paused)
-				a.mu.Lock()
-				if !paused {
-					a.toastMsg = "Playback paused"
-				} else {
-					a.toastMsg = "Playback resumed"
-				}
-				a.toastExpiry = time.Now().Add(toastShortDuration)
-				a.mu.Unlock()
-			}
-
-		case key.NameF12:
-			a.mu.Lock()
-			snap := a.result
-			a.mu.Unlock()
-			if snap != nil && snap.RGBA != nil {
-				go a.saveScreenshot(snap.RGBA)
-			}
+			break
 		}
 	}
+	if found < 0 {
+		return
+	}
+
+	if a.selectedSpot == found {
+		a.selectedSpot = -1
+	} else {
+		a.selectedSpot = found
+	}
+}
+
+// removeUserSpot removes the user spot at spotIdx, closes its graph window,
+// and renumbers remaining spots. Caller must hold a.mu.
+func (a *App) removeUserSpot(spotIdx int) {
+	if a.selectedSpot == spotIdx {
+		a.selectedSpot = -1
+	} else if a.selectedSpot > spotIdx {
+		a.selectedSpot--
+	}
+
+	if gw, ok := a.graphs[spotIdx]; ok {
+		gw.mu.Lock()
+		gw.window.Perform(system.ActionClose)
+		gw.mu.Unlock()
+		delete(a.graphs, spotIdx)
+	}
+
+	a.spots = append(a.spots[:spotIdx], a.spots[spotIdx+1:]...)
+
+	newGraphs := make(map[int]*GraphWindow)
+	for k, v := range a.graphs {
+		if k < firstUserSpotIdx {
+			newGraphs[k] = v
+		}
+	}
+	for j := firstUserSpotIdx; j < len(a.spots); j++ {
+		a.spots[j].Index = j
+		if gw, ok := a.graphs[j+1]; ok {
+			newGraphs[j] = gw
+		}
+	}
+	a.graphs = newGraphs
+}
+
+// handlePointerNormalPress handles a plain click: add or remove a user spot at
+// the given image coordinates.
+func (a *App) handlePointerNormalPress(imgX, imgY int) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	for spotIdx := firstUserSpotIdx; spotIdx < len(a.spots); spotIdx++ {
+		spX, spY := a.spots[spotIdx].GetPosition()
+		dx := int(spX) - imgX
+		dy := int(spY) - imgY
+		if dx*dx+dy*dy < spotHitRadiusSq {
+			a.removeUserSpot(spotIdx)
+
+			return
+		}
+	}
+
+	newIdx := len(a.spots)
+	newSpot := NewSpot(newIdx, SpotUser, color.NRGBA{R: 60, G: 220, B: 60, A: 230})
+	newSpot.SetPosition(float32(imgX), float32(imgY), true)
+	a.spots = append(a.spots, newSpot)
 }
 
 func (a *App) handlePointer(gtx layout.Context) {
@@ -649,122 +811,92 @@ func (a *App) handlePointer(gtx layout.Context) {
 
 		switch ptrEv.Kind {
 		case pointer.Move, pointer.Enter:
-			a.cursorPos = ptrEv.Position
-			// Map from screen coords to image pixel coords
-			imgX := int((ptrEv.Position.X - float32(a.imgOffsetX)) / a.imgScale)
-			imgY := int((ptrEv.Position.Y - float32(a.imgOffsetY)) / a.imgScale)
+			a.handlePointerMove(ptrEv)
 
-			a.mu.Lock()
-			res := a.result
-			a.mu.Unlock()
-
-			cursorSpot := a.spots[spotCursorIdx]
-			if res != nil && imgX >= 0 && imgY >= 0 && imgX < res.RGBA.Bounds().Dx() && imgY < res.RGBA.Bounds().Dy() {
-				cursorSpot.SetPosition(float32(imgX), float32(imgY), true)
-				// Update cursor temperature immediately so the label reflects the current pixel
-				imgW := res.RGBA.Bounds().Dx()
-				cIdx := imgY*imgW + imgX
-				if cIdx >= 0 && cIdx < len(res.Celsius) {
-					cursorSpot.SetLastTemp(res.Celsius[cIdx])
-				}
-			} else {
-				cursorSpot.SetActive(false)
-			}
-			// Invalidate cursor graph so it rebuilds from buffer at new position
-			a.mu.Lock()
-			cursorGW := a.graphs[2]
-			a.mu.Unlock()
-			if cursorGW != nil && !cursorGW.IsClosed() {
-				cursorGW.Invalidate()
-			}
 		case pointer.Press:
-			// Map screen to image coords
-			imgX := int((ptrEv.Position.X - float32(a.imgOffsetX)) / a.imgScale)
-			imgY := int((ptrEv.Position.Y - float32(a.imgOffsetY)) / a.imgScale)
-
-			a.mu.Lock()
-			res := a.result
-			a.mu.Unlock()
-
-			if res != nil && imgX >= 0 && imgY >= 0 && imgX < res.RGBA.Bounds().Dx() && imgY < res.RGBA.Bounds().Dy() {
-				// Shift+Click: select/deselect a spot for per-spot emissivity
-				if ptrEv.Modifiers.Contain(key.ModShift) {
-					a.mu.Lock()
-					found := -1
-					for spotIdx := firstUserSpotIdx; spotIdx < len(a.spots); spotIdx++ {
-						spX, spY := a.spots[spotIdx].GetPosition()
-						dx := int(spX) - imgX
-						dy := int(spY) - imgY
-						if dx*dx+dy*dy < spotHitRadiusSq {
-							found = spotIdx
-
-							break
-						}
-					}
-					if found >= 0 {
-						if a.selectedSpot == found {
-							a.selectedSpot = -1 // deselect
-						} else {
-							a.selectedSpot = found
-						}
-					}
-					a.mu.Unlock()
-				} else {
-					// Normal click: add or remove a user measurement point
-					removed := false
-					a.mu.Lock()
-					for spotIdx := firstUserSpotIdx; spotIdx < len(a.spots); spotIdx++ {
-						spX, spY := a.spots[spotIdx].GetPosition()
-						dx := int(spX) - imgX
-						dy := int(spY) - imgY
-						if dx*dx+dy*dy < spotHitRadiusSq {
-							// Deselect if this was the selected spot
-							if a.selectedSpot == spotIdx {
-								a.selectedSpot = -1
-							} else if a.selectedSpot > spotIdx {
-								a.selectedSpot--
-							}
-							// Close graph window if open
-							if gw, ok := a.graphs[spotIdx]; ok {
-								gw.mu.Lock()
-								gw.window.Perform(system.ActionClose)
-								gw.mu.Unlock()
-								delete(a.graphs, spotIdx)
-							}
-							a.spots = append(a.spots[:spotIdx], a.spots[spotIdx+1:]...)
-							// Re-number remaining user spots and fix graph map keys
-							newGraphs := make(map[int]*GraphWindow)
-							for k, v := range a.graphs {
-								if k < firstUserSpotIdx {
-									newGraphs[k] = v
-								}
-							}
-							for j := firstUserSpotIdx; j < len(a.spots); j++ {
-								a.spots[j].Index = j
-								if gw, ok := a.graphs[j+1]; ok {
-									newGraphs[j] = gw
-								}
-							}
-							a.graphs = newGraphs
-							removed = true
-
-							break
-						}
-					}
-					if !removed {
-						newIdx := len(a.spots)
-						newSpot := NewSpot(newIdx, SpotUser, color.NRGBA{R: 60, G: 220, B: 60, A: 230})
-						newSpot.SetPosition(float32(imgX), float32(imgY), true)
-						a.spots = append(a.spots, newSpot)
-					}
-					a.mu.Unlock()
-				}
-			}
+			a.handlePointerPress(ptrEv)
 
 		case pointer.Leave:
 			a.spots[spotCursorIdx].SetActive(false)
 		}
 	}
+}
+
+// handlePointerPress handles a pointer press event: bounds-checks the click
+// position and dispatches to shift-press or normal-press handling.
+func (a *App) handlePointerPress(ptrEv pointer.Event) {
+	imgX := int((ptrEv.Position.X - float32(a.imgOffsetX)) / a.imgScale)
+	imgY := int((ptrEv.Position.Y - float32(a.imgOffsetY)) / a.imgScale)
+
+	a.mu.Lock()
+	res := a.result
+	a.mu.Unlock()
+
+	inBounds := res != nil && imgX >= 0 && imgY >= 0 &&
+		imgX < res.RGBA.Bounds().Dx() && imgY < res.RGBA.Bounds().Dy()
+	if !inBounds {
+		return
+	}
+
+	if ptrEv.Modifiers.Contain(key.ModShift) {
+		a.handlePointerShiftPress(imgX, imgY)
+	} else {
+		a.handlePointerNormalPress(imgX, imgY)
+	}
+}
+
+// applyBufPanelSizeChange handles a size change from the buffer panel.
+func (a *App) applyBufPanelSizeChange(newBytes int64) {
+	a.frameBuf.SetMaxBytes(newBytes)
+	if a.playBuf != nil {
+		a.playBuf.StopBackfill()
+		a.playBuf.SetMaxBytes(newBytes)
+		idx := a.player.FrameIndex()
+		a.mu.Lock()
+		params := a.params
+		rot := a.rotation
+		a.mu.Unlock()
+		a.playBuf.StartBackfill(a.player, idx, params, rot, a.invalidateGraphs)
+	}
+	a.mu.Lock()
+	a.toastMsg = fmt.Sprintf("Buffer resized to %s", humanSize(newBytes))
+	a.toastExpiry = time.Now().Add(toastShortDuration)
+	a.mu.Unlock()
+}
+
+// applyBufPanelIntervalChange handles a sample-interval change from the buffer panel.
+func (a *App) applyBufPanelIntervalChange(newInterval time.Duration) {
+	a.frameBuf.SetSampleInterval(newInterval)
+	if a.playBuf != nil {
+		skip := 1
+		if newInterval > 0 {
+			skip = int(newInterval.Milliseconds() / msPerFrameAt25FPS)
+			if skip < 1 {
+				skip = 1
+			}
+		}
+		a.playBuf.StopBackfill()
+		a.playBuf.SetSampleSkip(skip)
+		a.playBuf.Clear()
+		idx := a.player.FrameIndex()
+		a.mu.Lock()
+		params := a.params
+		rot := a.rotation
+		a.mu.Unlock()
+		a.playBuf.StartBackfill(a.player, idx, params, rot, a.invalidateGraphs)
+	}
+	label := "Max"
+	for _, p := range sampleRatePresets {
+		if p.Interval == newInterval {
+			label = p.Label
+
+			break
+		}
+	}
+	a.mu.Lock()
+	a.toastMsg = fmt.Sprintf("Sample rate: %s", label)
+	a.toastExpiry = time.Now().Add(toastShortDuration)
+	a.mu.Unlock()
 }
 
 func (a *App) doLayout(gtx layout.Context) layout.Dimensions {
@@ -805,97 +937,134 @@ func (a *App) doLayout(gtx layout.Context) layout.Dimensions {
 	// Help overlay is drawn on top after the main layout
 	dims := layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
 
+	a.layoutOverlays(gtx)
+
+	return dims
+}
+
+// layoutOverlays renders the help panel, emissivity dropdown, buffer panel,
+// and toast notification on top of the main layout.
+func (a *App) layoutOverlays(gtx layout.Context) {
 	if a.showHelp {
 		a.layoutHelp(gtx)
 	}
 
-	// Emissivity dropdown overlay
-	if a.epsDropdown.IsOpen() {
+	a.layoutEpsDropdownOverlay(gtx)
+	a.layoutBufPanelOverlay(gtx)
+	a.layoutToastOverlay(gtx)
+}
+
+// layoutEpsDropdownOverlay renders the emissivity dropdown if it is open.
+func (a *App) layoutEpsDropdownOverlay(gtx layout.Context) {
+	if !a.epsDropdown.IsOpen() {
+		return
+	}
+
+	a.mu.Lock()
+	eIdx := a.emissivityIdx
+	a.mu.Unlock()
+
+	if sel := a.epsDropdown.Layout(gtx, a.theme, eIdx); sel >= 0 {
 		a.mu.Lock()
-		eIdx := a.emissivityIdx
+		a.emissivityIdx = sel
+		preset := colorize.EmissivityPresets[sel]
+		a.params.Emissivity = preset.Emissivity
+		a.toastMsg = fmt.Sprintf("ε = %.2f  %s", preset.Emissivity, preset.Name)
+		a.toastExpiry = time.Now().Add(toastShortDuration)
 		a.mu.Unlock()
-		if sel := a.epsDropdown.Layout(gtx, a.theme, eIdx); sel >= 0 {
-			a.mu.Lock()
-			a.emissivityIdx = sel
-			preset := colorize.EmissivityPresets[sel]
-			a.params.Emissivity = preset.Emissivity
-			a.toastMsg = fmt.Sprintf("ε = %.2f  %s", preset.Emissivity, preset.Name)
-			a.toastExpiry = time.Now().Add(toastShortDuration)
-			a.mu.Unlock()
-			a.refreshDisplay()
-		}
+		a.refreshDisplay()
+	}
+}
+
+// layoutBufPanelOverlay renders the buffer-settings panel if it is open.
+func (a *App) layoutBufPanelOverlay(gtx layout.Context) {
+	if !a.bufPanel.IsOpen() {
+		return
 	}
 
-	// Buffer settings panel overlay
-	if a.bufPanel.IsOpen() {
-		curBytes := a.frameBuf.MaxBytes()
-		curInterval := a.frameBuf.SampleInterval()
-		w, h := a.frameBuf.Dims()
-		res := a.bufPanel.Layout(gtx, a.theme, curBytes, curInterval, frameBytesPerPixel, w*h)
-		if res.SizeChanged {
-			a.frameBuf.SetMaxBytes(res.NewBytes)
-			if a.playBuf != nil {
-				a.playBuf.StopBackfill()
-				a.playBuf.SetMaxBytes(res.NewBytes)
-				idx := a.player.FrameIndex()
-				a.mu.Lock()
-				params := a.params
-				rot := a.rotation
-				a.mu.Unlock()
-				a.playBuf.StartBackfill(a.player, idx, params, rot, a.invalidateGraphs)
-			}
-			a.mu.Lock()
-			a.toastMsg = fmt.Sprintf("Buffer resized to %s", humanSize(res.NewBytes))
-			a.toastExpiry = time.Now().Add(toastShortDuration)
-			a.mu.Unlock()
-		}
-		if res.IntervalChanged {
-			a.frameBuf.SetSampleInterval(res.NewInterval)
-			if a.playBuf != nil {
-				// Convert interval to frame skip (recording is ~25fps)
-				skip := 1
-				if res.NewInterval > 0 {
-					skip = int(res.NewInterval.Milliseconds() / msPerFrameAt25FPS)
-					if skip < 1 {
-						skip = 1
-					}
-				}
-				a.playBuf.StopBackfill()
-				a.playBuf.SetSampleSkip(skip)
-				a.playBuf.Clear()
-				idx := a.player.FrameIndex()
-				a.mu.Lock()
-				params := a.params
-				rot := a.rotation
-				a.mu.Unlock()
-				a.playBuf.StartBackfill(a.player, idx, params, rot, a.invalidateGraphs)
-			}
-			label := "Max"
-			for _, p := range sampleRatePresets {
-				if p.Interval == res.NewInterval {
-					label = p.Label
+	curBytes := a.frameBuf.MaxBytes()
+	curInterval := a.frameBuf.SampleInterval()
+	w, h := a.frameBuf.Dims()
+	res := a.bufPanel.Layout(gtx, a.theme, curBytes, curInterval, frameBytesPerPixel, w*h)
 
-					break
-				}
-			}
-			a.mu.Lock()
-			a.toastMsg = fmt.Sprintf("Sample rate: %s", label)
-			a.toastExpiry = time.Now().Add(toastShortDuration)
-			a.mu.Unlock()
-		}
+	if res.SizeChanged {
+		a.applyBufPanelSizeChange(res.NewBytes)
 	}
 
-	// Toast overlay
+	if res.IntervalChanged {
+		a.applyBufPanelIntervalChange(res.NewInterval)
+	}
+}
+
+// layoutToastOverlay renders the toast notification if it is active.
+func (a *App) layoutToastOverlay(gtx layout.Context) {
 	a.mu.Lock()
 	msg := a.toastMsg
 	expiry := a.toastExpiry
 	a.mu.Unlock()
+
 	if msg != "" && time.Now().Before(expiry) {
 		a.layoutToast(gtx, msg)
 		a.Window.Invalidate()
 	}
+}
 
-	return dims
+// drawSpotMarkers paints colored squares (and optional selection rings) for all
+// non-cursor spots onto the image area.
+func (a *App) drawSpotMarkers(
+	gtx layout.Context, snaps []spotSnap, selIdx, offsetX, offsetY, markerSize int, scale float32,
+) {
+	for _, snap := range snaps {
+		if !snap.state.Active || snap.sp.Kind == SpotCursor {
+			continue
+		}
+
+		markerCX := offsetX + int(snap.state.X*scale+scale/2)
+		markerCY := offsetY + int(snap.state.Y*scale+scale/2)
+
+		// Selection highlight: larger yellow ring
+		if snap.sp.Index == selIdx {
+			ringSize := markerSize + selectionRingExtra
+			selRingRect := image.Rectangle{
+				Min: image.Pt(markerCX-ringSize, markerCY-ringSize),
+				Max: image.Pt(markerCX+ringSize, markerCY+ringSize),
+			}
+			selRingOp := clip.Rect(selRingRect).Push(gtx.Ops)
+			paint.Fill(gtx.Ops, color.NRGBA{R: 255, G: 220, B: 0, A: 255})
+			selRingOp.Pop()
+		}
+
+		mx := markerCX - markerSize
+		my := markerCY - markerSize
+		sz := markerSize * markerDiameterMult
+		markerOp := clip.Rect{Min: image.Pt(mx, my), Max: image.Pt(mx+sz, my+sz)}.Push(gtx.Ops)
+		paint.Fill(gtx.Ops, snap.sp.Color)
+		markerOp.Pop()
+	}
+}
+
+// drawSpotLabels paints temperature labels for all visible non-cursor spots.
+func (a *App) drawSpotLabels(
+	gtx layout.Context, snaps []spotSnap, result *colorize.Result, offsetX, offsetY int, scale float32,
+) {
+	imgW := result.RGBA.Bounds().Dx()
+	for _, snap := range snaps {
+		if !snap.state.Active || snap.sp.Kind == SpotCursor {
+			continue
+		}
+		idx := int(snap.state.Y)*imgW + int(snap.state.X)
+		if idx < 0 || idx >= len(result.Celsius) {
+			continue
+		}
+		labelX := offsetX + int(snap.state.X*scale+scale/2)
+		labelY := offsetY + int(snap.state.Y*scale) - spotLabelYAdj
+		temp := snap.sp.CorrectedTemp(result.Celsius[idx], result.GlobalEmissivity, result.AmbientC)
+		epsSuffix := ""
+		if snap.state.Emissivity > 0 {
+			epsSuffix = fmt.Sprintf(" e%.2f", snap.state.Emissivity)
+		}
+		a.drawSpotLabel(gtx, labelX, labelY, snap.sp.Index, temp, epsSuffix, snap.sp.Color)
+	}
 }
 
 func (a *App) layoutImage(gtx layout.Context, result *colorize.Result) layout.Dimensions {
@@ -961,65 +1130,16 @@ func (a *App) layoutImage(gtx layout.Context, result *colorize.Result) layout.Di
 	a.mu.Unlock()
 
 	// Take a snapshot of each spot's mutable state (thread-safe)
-	type spotSnap struct {
-		sp    *Spot
-		state SpotState
-	}
 	snaps := make([]spotSnap, len(allSpots))
 	for snapIdx, sp := range allSpots {
 		snaps[snapIdx] = spotSnap{sp: sp, state: sp.GetState()}
 	}
 
-	for _, snap := range snaps {
-		if !snap.state.Active {
-			continue
-		}
-		if snap.sp.Kind == SpotCursor {
-			continue
-		}
-
-		markerCX := offsetX + int(snap.state.X*scale+scale/2)
-		markerCY := offsetY + int(snap.state.Y*scale+scale/2)
-
-		// Selection highlight: larger yellow ring
-		if snap.sp.Index == selIdx {
-			ringSize := markerSize + selectionRingExtra
-			selRingRect := image.Rectangle{
-				Min: image.Pt(markerCX-ringSize, markerCY-ringSize),
-				Max: image.Pt(markerCX+ringSize, markerCY+ringSize),
-			}
-			selRingOp := clip.Rect(selRingRect).Push(gtx.Ops)
-			paint.Fill(gtx.Ops, color.NRGBA{R: 255, G: 220, B: 0, A: 255})
-			selRingOp.Pop()
-		}
-
-		mx := markerCX - markerSize
-		my := markerCY - markerSize
-		sz := markerSize * markerDiameterMult
-		markerOp := clip.Rect{Min: image.Pt(mx, my), Max: image.Pt(mx+sz, my+sz)}.Push(gtx.Ops)
-		paint.Fill(gtx.Ops, snap.sp.Color)
-		markerOp.Pop()
-	}
+	a.drawSpotMarkers(gtx, snaps, selIdx, offsetX, offsetY, markerSize, scale)
 
 	// Temperature labels
 	if a.showLabels {
-		imgW := result.RGBA.Bounds().Dx()
-		for _, snap := range snaps {
-			if !snap.state.Active || snap.sp.Kind == SpotCursor {
-				continue
-			}
-			idx := int(snap.state.Y)*imgW + int(snap.state.X)
-			if idx >= 0 && idx < len(result.Celsius) {
-				labelX := offsetX + int(snap.state.X*scale+scale/2)
-				labelY := offsetY + int(snap.state.Y*scale) - spotLabelYAdj
-				temp := snap.sp.CorrectedTemp(result.Celsius[idx], result.GlobalEmissivity, result.AmbientC)
-				epsSuffix := ""
-				if snap.state.Emissivity > 0 {
-					epsSuffix = fmt.Sprintf(" e%.2f", snap.state.Emissivity)
-				}
-				a.drawSpotLabel(gtx, labelX, labelY, snap.sp.Index, temp, epsSuffix, snap.sp.Color)
-			}
-		}
+		a.drawSpotLabels(gtx, snaps, result, offsetX, offsetY, scale)
 	}
 
 	// Cursor temperature label (next to mouse pointer)
@@ -1316,6 +1436,62 @@ func (a *App) layoutPlaybackBar(gtx layout.Context) layout.Dimensions {
 	)
 }
 
+// handleSliderEvents processes pointer input on the playback slider area.
+func (a *App) handleSliderEvents(gtx layout.Context, sliderW, total, current int) {
+	filters := []event.Filter{
+		pointer.Filter{
+			Target:  &a.sliderTag,
+			Kinds:   pointer.Press | pointer.Drag | pointer.Release | pointer.Scroll,
+			ScrollY: pointer.ScrollRange{Min: -10, Max: 10},
+		},
+	}
+
+	for {
+		inputEv, ok := gtx.Source.Event(filters...)
+		if !ok {
+			break
+		}
+
+		ptrEv, isPtr := inputEv.(pointer.Event)
+		if !isPtr {
+			continue
+		}
+
+		switch ptrEv.Kind {
+		case pointer.Press:
+			a.sliderDragging = true
+			a.seekToFrame(a.sliderPosToFrame(ptrEv.Position.X, float32(sliderW), total))
+
+		case pointer.Drag:
+			if a.sliderDragging {
+				a.seekToFrame(a.sliderPosToFrame(ptrEv.Position.X, float32(sliderW), total))
+			}
+
+		case pointer.Release:
+			a.sliderDragging = false
+
+		case pointer.Scroll:
+			a.handleSliderScroll(ptrEv.Scroll.Y, current, total)
+		}
+	}
+}
+
+// handleSliderScroll seeks by scrollY frames when the player is paused.
+func (a *App) handleSliderScroll(scrollY float32, current, total int) {
+	if a.player == nil || !a.player.IsPaused() {
+		return
+	}
+
+	idx := current + int(scrollY)
+	if idx < 0 {
+		idx = 0
+	} else if idx >= total {
+		idx = total - 1
+	}
+
+	a.seekToFrame(idx)
+}
+
 func (a *App) layoutSlider(gtx layout.Context, current, total, _ int) layout.Dimensions {
 	sliderH := gtx.Dp(unit.Dp(sliderHeightDp))
 	trackH := gtx.Dp(unit.Dp(sliderTrackHeightDp))
@@ -1329,49 +1505,7 @@ func (a *App) layoutSlider(gtx layout.Context, current, total, _ int) layout.Dim
 	event.Op(gtx.Ops, &a.sliderTag)
 	area.Pop()
 
-	// Handle pointer events (click, drag, scroll)
-	filters := []event.Filter{
-		pointer.Filter{
-			Target:  &a.sliderTag,
-			Kinds:   pointer.Press | pointer.Drag | pointer.Release | pointer.Scroll,
-			ScrollY: pointer.ScrollRange{Min: -10, Max: 10},
-		},
-	}
-	for {
-		inputEv, ok := gtx.Source.Event(filters...)
-		if !ok {
-			break
-		}
-		ptrEv, ok := inputEv.(pointer.Event)
-		if !ok {
-			continue
-		}
-		switch ptrEv.Kind {
-		case pointer.Press:
-			a.sliderDragging = true
-			idx := a.sliderPosToFrame(ptrEv.Position.X, float32(sliderW), total)
-			a.seekToFrame(idx)
-		case pointer.Drag:
-			if a.sliderDragging {
-				idx := a.sliderPosToFrame(ptrEv.Position.X, float32(sliderW), total)
-				a.seekToFrame(idx)
-			}
-		case pointer.Release:
-			a.sliderDragging = false
-		case pointer.Scroll:
-			if a.player != nil && a.player.IsPaused() {
-				skip := int(ptrEv.Scroll.Y)
-				idx := current + skip
-				if idx < 0 {
-					idx = 0
-				}
-				if idx >= total {
-					idx = total - 1
-				}
-				a.seekToFrame(idx)
-			}
-		}
-	}
+	a.handleSliderEvents(gtx, sliderW, total, current)
 
 	// Draw track background
 	trackY := (sliderH - trackH) / centerDiv

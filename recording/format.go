@@ -22,6 +22,7 @@
 package recording
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -81,9 +82,7 @@ func readHeader(r io.Reader) (Header, error) {
 	if _, err := io.ReadFull(r, buf[:]); err != nil {
 		return Header{}, fmt.Errorf("read header: %w", err)
 	}
-	if buf[0] != magic[0] || buf[1] != magic[1] || buf[2] != magic[2] ||
-		buf[3] != magic[3] || buf[4] != magic[4] || buf[5] != magic[5] ||
-		buf[6] != magic[6] || buf[7] != magic[7] {
+	if !bytes.Equal(buf[:8], magic[:]) {
 		return Header{}, fmt.Errorf("not a .tha file (bad magic)")
 	}
 	ver := binary.LittleEndian.Uint16(buf[8:10])

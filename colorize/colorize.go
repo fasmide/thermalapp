@@ -94,46 +94,7 @@ func Colorize(frame *camera.Frame, params Params) *Result {
 	lut := params.Palette.LUT()
 
 	if params.Mode == AGCHardware {
-		// Use the IR brightness plane directly
-		for row := range height {
-			for col := range width {
-				idx := row*width + col
-				val := frame.IR[idx]
-				rgb := lut[val]
-				result.RGBA.SetRGBA(col, row, color.RGBA{rgb[0], rgb[1], rgb[2], 255})
-			}
-		}
-		// Still compute celsius for cursor readout
-		result.Celsius = make([]float32, len(frame.Thermal))
-		for idx, raw := range frame.Thermal {
-			result.Celsius[idx] = camera.ToCelsius(raw)
-		}
-		// Apply global emissivity correction
-		eps := params.Emissivity
-		if eps > 0 && eps < 1.0 {
-			tRefl := EstimateAmbient(result.Celsius)
-			result.AmbientC = tRefl
-			for idx := range result.Celsius {
-				result.Celsius[idx] = CorrectEmissivity(result.Celsius[idx], tRefl, eps)
-			}
-		}
-		result.GlobalEmissivity = eps
-		if len(result.Celsius) > 0 {
-			result.MinC = result.Celsius[0]
-			result.MaxC = result.Celsius[0]
-			for idx, cel := range result.Celsius {
-				if cel < result.MinC {
-					result.MinC = cel
-					result.MinX = idx % width
-					result.MinY = idx / width
-				}
-				if cel > result.MaxC {
-					result.MaxC = cel
-					result.MaxX = idx % width
-					result.MaxY = idx / width
-				}
-			}
-		}
+		colorizeHardwareMode(frame, params, lut, result)
 
 		return result
 	}
@@ -145,33 +106,9 @@ func Colorize(frame *camera.Frame, params Params) *Result {
 		celsius[idx] = camera.ToCelsius(raw)
 	}
 
-	// Apply global emissivity correction
-	eps := params.Emissivity
-	if eps > 0 && eps < 1.0 {
-		tRefl := EstimateAmbient(celsius)
-		result.AmbientC = tRefl
-		for i := range celsius {
-			celsius[i] = CorrectEmissivity(celsius[i], tRefl, eps)
-		}
-	}
-	result.GlobalEmissivity = eps
+	applyGlobalEmissivity(celsius, params.Emissivity, result)
 	result.Celsius = celsius
-
-	// Find min/max
-	result.MinC = celsius[0]
-	result.MaxC = celsius[0]
-	for idx, cel := range celsius {
-		if cel < result.MinC {
-			result.MinC = cel
-			result.MinX = idx % width
-			result.MinY = idx / width
-		}
-		if cel > result.MaxC {
-			result.MaxC = cel
-			result.MaxX = idx % width
-			result.MaxY = idx / width
-		}
-	}
+	updateMinMax(celsius, width, result)
 
 	var low, high float32
 	switch params.Mode {
@@ -202,6 +139,65 @@ func Colorize(frame *camera.Frame, params Params) *Result {
 	}
 
 	return result
+}
+
+// colorizeHardwareMode fills result using the IR brightness plane directly.
+func colorizeHardwareMode(frame *camera.Frame, params Params, lut *[256][3]uint8, result *Result) {
+	width, height := frame.Width, frame.Height
+
+	for row := range height {
+		for col := range width {
+			idx := row*width + col
+			val := frame.IR[idx]
+			rgb := lut[val]
+			result.RGBA.SetRGBA(col, row, color.RGBA{rgb[0], rgb[1], rgb[2], 255})
+		}
+	}
+
+	result.Celsius = make([]float32, len(frame.Thermal))
+	for idx, raw := range frame.Thermal {
+		result.Celsius[idx] = camera.ToCelsius(raw)
+	}
+
+	applyGlobalEmissivity(result.Celsius, params.Emissivity, result)
+	updateMinMax(result.Celsius, width, result)
+}
+
+// applyGlobalEmissivity corrects celsius in-place for params.Emissivity and
+// records AmbientC and GlobalEmissivity on result.
+func applyGlobalEmissivity(celsius []float32, eps float32, result *Result) {
+	if eps > 0 && eps < 1.0 {
+		tRefl := EstimateAmbient(celsius)
+		result.AmbientC = tRefl
+		for idx := range celsius {
+			celsius[idx] = CorrectEmissivity(celsius[idx], tRefl, eps)
+		}
+	}
+
+	result.GlobalEmissivity = eps
+}
+
+// updateMinMax scans celsius and fills result.MinC/MaxC and their pixel positions.
+func updateMinMax(celsius []float32, width int, result *Result) {
+	if len(celsius) == 0 {
+		return
+	}
+
+	result.MinC = celsius[0]
+	result.MaxC = celsius[0]
+
+	for idx, cel := range celsius {
+		if cel < result.MinC {
+			result.MinC = cel
+			result.MinX = idx % width
+			result.MinY = idx / width
+		}
+		if cel > result.MaxC {
+			result.MaxC = cel
+			result.MaxX = idx % width
+			result.MaxY = idx / width
+		}
+	}
 }
 
 // percentileBounds returns the p_low and p_high percentile values from data.
@@ -236,6 +232,19 @@ func MakeColorbar(p Palette, h int) *image.RGBA {
 	return img
 }
 
+// rotateCoord maps a source pixel (srcCol, srcRow) to its destination (dstX, dstY)
+// for a clockwise rotation of `steps` × 90° within an srcW × srcH image.
+func rotateCoord(srcCol, srcRow, steps, srcW, srcH int) (dstX, dstY int) {
+	switch steps {
+	case 1: // 90° CW
+		return srcH - 1 - srcRow, srcCol
+	case rot180Steps: // 180°
+		return srcW - 1 - srcCol, srcH - 1 - srcRow
+	default: // 270° CW (steps == 3)
+		return srcRow, srcW - 1 - srcCol
+	}
+}
+
 // Rotate returns a new Result rotated 90° clockwise `steps` times (0-3).
 // The RGBA image, Celsius array, dimensions, and min/max coordinates are all
 // transformed so that downstream code can treat the result as an upright image.
@@ -260,15 +269,7 @@ func (r *Result) Rotate(steps int) *Result {
 
 	for srcRow := range srcH {
 		for srcCol := range srcW {
-			var destX, destY int
-			switch steps {
-			case 1: // 90° CW
-				destX, destY = srcH-1-srcRow, srcCol
-			case rot180Steps: // 180°
-				destX, destY = srcW-1-srcCol, srcH-1-srcRow
-			case rot270Steps: // 270° CW
-				destX, destY = srcRow, srcW-1-srcCol
-			}
+			destX, destY := rotateCoord(srcCol, srcRow, steps, srcW, srcH)
 			dst.SetRGBA(destX, destY, r.RGBA.RGBAAt(srcCol, srcRow))
 			srcIdx := srcRow*srcW + srcCol
 			dstIdx := destY*dstW + destX
@@ -278,40 +279,17 @@ func (r *Result) Rotate(steps int) *Result {
 		}
 	}
 
-	// Rotate min/max coords
-	rotX := func(col, row int) int {
-		switch steps {
-		case 1:
-			return srcH - 1 - row
-		case rot180Steps:
-			return srcW - 1 - col
-		case rot270Steps:
-			return row
-		}
-
-		return col
-	}
-	rotY := func(col, row int) int {
-		switch steps {
-		case 1:
-			return col
-		case rot180Steps:
-			return srcH - 1 - row
-		case rot270Steps:
-			return srcW - 1 - col
-		}
-
-		return row
-	}
+	minX, minY := rotateCoord(r.MinX, r.MinY, steps, srcW, srcH)
+	maxX, maxY := rotateCoord(r.MaxX, r.MaxY, steps, srcW, srcH)
 
 	return &Result{
 		RGBA:    dst,
 		MinC:    r.MinC,
 		MaxC:    r.MaxC,
-		MinX:    rotX(r.MinX, r.MinY),
-		MinY:    rotY(r.MinX, r.MinY),
-		MaxX:    rotX(r.MaxX, r.MaxY),
-		MaxY:    rotY(r.MaxX, r.MaxY),
+		MinX:    minX,
+		MinY:    minY,
+		MaxX:    maxX,
+		MaxY:    maxY,
 		Width:   dstW,
 		Celsius: celsius,
 	}

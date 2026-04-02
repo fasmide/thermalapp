@@ -174,47 +174,69 @@ func runRevMeta() {
 
 		meta := frame.Metadata
 		if prev == nil {
-			// First frame: print all values
-			fmt.Printf("=== Frame %d (initial) ===\n", frameNum)
-			fmt.Println("Row 0:")
-			for i := 0; i < metadataRowWidth && i < len(meta); i++ {
-				fmt.Printf("  [%3d]=%04x", i, meta[i])
-				if (i+1)%metadataPrintCols == 0 {
-					fmt.Println()
-				}
-			}
-			fmt.Println("Row 1:")
-			for i := metadataRowWidth; i < 2*metadataRowWidth && i < len(meta); i++ {
-				fmt.Printf("  [%3d]=%04x", i, meta[i])
-				if (i-metadataRowWidth+1)%metadataPrintCols == 0 {
-					fmt.Println()
-				}
-			}
+			printInitialMetadata(frameNum, meta)
 			prev = make([]uint16, len(meta))
 			copy(prev, meta)
 
 			continue
 		}
 
-		// Print only changes
-		changed := 0
-		for i := range meta {
-			if i < len(prev) && meta[i] != prev[i] {
-				changed++
-			}
-		}
-		if changed > 0 {
-			fmt.Printf("=== Frame %d (%d changes) ===\n", frameNum, changed)
-			for i := range meta {
-				if i < len(prev) && meta[i] != prev[i] {
-					row := i / metadataRowWidth
-					col := i % metadataRowWidth
-					fmt.Printf("  [r%d c%3d / %3d] %04x -> %04x\n", row, col, i, prev[i], meta[i])
-				}
-			}
-			copy(prev, meta)
+		printChangedMetadata(frameNum, meta, prev)
+		copy(prev, meta)
+	}
+}
+
+// printInitialMetadata prints all metadata values on the first frame.
+func printInitialMetadata(frameNum int, meta []uint16) {
+	fmt.Printf("=== Frame %d (initial) ===\n", frameNum)
+	fmt.Println("Row 0:")
+
+	for i := 0; i < metadataRowWidth && i < len(meta); i++ {
+		fmt.Printf("  [%3d]=%04x", i, meta[i])
+		if (i+1)%metadataPrintCols == 0 {
+			fmt.Println()
 		}
 	}
+
+	fmt.Println("Row 1:")
+
+	for i := metadataRowWidth; i < 2*metadataRowWidth && i < len(meta); i++ {
+		fmt.Printf("  [%3d]=%04x", i, meta[i])
+		if (i-metadataRowWidth+1)%metadataPrintCols == 0 {
+			fmt.Println()
+		}
+	}
+}
+
+// printChangedMetadata prints only the metadata values that changed since prev.
+func printChangedMetadata(frameNum int, meta, prev []uint16) {
+	changed := 0
+
+	for i := range meta {
+		if i < len(prev) && meta[i] != prev[i] {
+			changed++
+		}
+	}
+
+	if changed == 0 {
+		return
+	}
+
+	fmt.Printf("=== Frame %d (%d changes) ===\n", frameNum, changed)
+
+	for i := range meta {
+		if i < len(prev) && meta[i] != prev[i] {
+			row := i / metadataRowWidth
+			col := i % metadataRowWidth
+			fmt.Printf("  [r%d c%3d / %3d] %04x -> %04x\n", row, col, i, prev[i], meta[i])
+		}
+	}
+}
+
+// metaReg describes a metadata register to track in runRevMeta2.
+type metaReg struct {
+	idx  int
+	name string
 }
 
 func runRevMeta2() {
@@ -238,12 +260,7 @@ func runRevMeta2() {
 	}
 	defer cam.Close()
 
-	// Registers of interest (row 0 only)
-	type reg struct {
-		idx  int
-		name string
-	}
-	regs := []reg{
+	regs := []metaReg{
 		{64, "frameCnt"},
 		{65, "r65"},
 		{68, "r68"},
@@ -287,56 +304,82 @@ func runRevMeta2() {
 		frameNum++
 		meta := frame.Metadata
 
-		// Check if any tracked register changed
-		anyChange := prev == nil
-		if !anyChange {
-			for _, r := range regs {
-				if r.idx < len(meta) && r.idx < len(prev) && meta[r.idx] != prev[r.idx] {
-					anyChange = true
-
-					break
-				}
-			}
-		}
-
-		// Also check for ANY change outside tracked registers (flag it)
-		extraChanges := 0
-		if prev != nil {
-			for i := range meta {
-				if i < len(prev) && meta[i] != prev[i] {
-					tracked := false
-					for _, r := range regs {
-						if r.idx == i {
-							tracked = true
-
-							break
-						}
-					}
-					if !tracked {
-						extraChanges++
-					}
-				}
-			}
-		}
+		anyChange := hasTrackedChange(meta, prev, regs)
+		extraChanges := countExtraChanges(meta, prev, regs)
 
 		if anyChange || extraChanges > 0 {
-			fmt.Printf("%8d", frameNum)
-			for _, r := range regs {
-				if r.idx < len(meta) {
-					fmt.Printf(" %12s", fmt.Sprintf("%04x", meta[r.idx]))
-				} else {
-					fmt.Printf(" %12s", "----")
-				}
-			}
-			if extraChanges > 0 {
-				fmt.Printf("  +%d untracked", extraChanges)
-			}
-			fmt.Println()
+			printRegRow(frameNum, meta, regs, extraChanges)
 		}
 
 		if prev == nil {
 			prev = make([]uint16, len(meta))
 		}
+
 		copy(prev, meta)
 	}
+}
+
+// hasTrackedChange reports whether any of the tracked registers changed.
+func hasTrackedChange(meta, prev []uint16, regs []metaReg) bool {
+	if prev == nil {
+		return true
+	}
+
+	for _, r := range regs {
+		if r.idx < len(meta) && r.idx < len(prev) && meta[r.idx] != prev[r.idx] {
+			return true
+		}
+	}
+
+	return false
+}
+
+// countExtraChanges counts metadata changes outside the tracked registers.
+func countExtraChanges(meta, prev []uint16, regs []metaReg) int {
+	if prev == nil {
+		return 0
+	}
+
+	count := 0
+
+	for idx := range meta {
+		if idx >= len(prev) || meta[idx] == prev[idx] {
+			continue
+		}
+
+		tracked := false
+
+		for _, r := range regs {
+			if r.idx == idx {
+				tracked = true
+
+				break
+			}
+		}
+
+		if !tracked {
+			count++
+		}
+	}
+
+	return count
+}
+
+// printRegRow prints one data row: frame number, tracked register values, and extra-change count.
+func printRegRow(frameNum int, meta []uint16, regs []metaReg, extraChanges int) {
+	fmt.Printf("%8d", frameNum)
+
+	for _, r := range regs {
+		if r.idx < len(meta) {
+			fmt.Printf(" %12s", fmt.Sprintf("%04x", meta[r.idx]))
+		} else {
+			fmt.Printf(" %12s", "----")
+		}
+	}
+
+	if extraChanges > 0 {
+		fmt.Printf("  +%d untracked", extraChanges)
+	}
+
+	fmt.Println()
 }

@@ -89,6 +89,15 @@ var JetLUT [256][3]uint8
 var GrayscaleLUT [256][3]uint8
 
 func init() {
+	initIronLUT()
+	initJetLUT()
+
+	for lutIdx := range 256 {
+		GrayscaleLUT[lutIdx] = [3]uint8{uint8(lutIdx), uint8(lutIdx), uint8(lutIdx)}
+	}
+}
+
+func initIronLUT() {
 	for lutIdx := range 256 {
 		normalized := float64(lutIdx) / lutMaxFloat
 
@@ -106,7 +115,9 @@ func init() {
 		}
 		IronLUT[lutIdx] = [3]uint8{uint8(red * lutMaxFloat), uint8(green * lutMaxFloat), uint8(blue * lutMaxFloat)}
 	}
+}
 
+func initJetLUT() {
 	for lutIdx := range 256 {
 		normalized := float64(lutIdx) / lutMaxFloat
 		var red, green, blue float64
@@ -127,10 +138,6 @@ func init() {
 			uint8(clampF(green) * lutMaxFloat),
 			uint8(clampF(blue) * lutMaxFloat),
 		}
-	}
-
-	for lutIdx := range 256 {
-		GrayscaleLUT[lutIdx] = [3]uint8{uint8(lutIdx), uint8(lutIdx), uint8(lutIdx)}
 	}
 }
 

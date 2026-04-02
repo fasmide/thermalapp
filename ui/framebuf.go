@@ -323,13 +323,19 @@ func (pb *PlaybackBuffer) evict(addIdx int) {
 	}
 }
 
+// validPixelQuery reports whether (pixX, pixY) is within the buffer bounds
+// and the buffer has data to return.
+func (pb *PlaybackBuffer) validPixelQuery(pixX, pixY int) bool {
+	return len(pb.cache) > 0 && pixX >= 0 && pixY >= 0 && pixX < pb.width && pixY < pb.height
+}
+
 // QueryPixel returns up to maxSamples temperature samples at pixel (px,py) from cached frames
 // up to and including the current playback position, in frame order.
 func (pb *PlaybackBuffer) QueryPixel(pixX, pixY, maxSamples int) []Sample {
 	pb.mu.RLock()
 	defer pb.mu.RUnlock()
 
-	if len(pb.cache) == 0 || pixX < 0 || pixY < 0 || pixX >= pb.width || pixY >= pb.height {
+	if !pb.validPixelQuery(pixX, pixY) {
 		return nil
 	}
 
@@ -471,25 +477,72 @@ func (pb *PlaybackBuffer) StartBackfill(
 	}()
 }
 
-func (pb *PlaybackBuffer) runBackfill(ctx context.Context, player *recording.Player, upToIdx int, params colorize.Params, rotation int, invalidate func()) {
-	// Release mmap pages when backfill finishes (normal completion or cancellation)
-	defer player.ReleaseMmapPages()
-
-	// Build work list: frame indices to backfill (newest first, skip cached)
-	// Respect sampleSkip: only include frames that align with the skip grid
-	work := make([]int, 0, upToIdx)
+// backfillWork returns the list of frame indices that need to be loaded,
+// newest first, capped at pb.maxEntries and aligned to the skip grid.
+func (pb *PlaybackBuffer) backfillWork(upToIdx int) []int {
 	pb.mu.RLock()
+	defer pb.mu.RUnlock()
+
 	skip := pb.sampleSkip
 	if skip < 1 {
 		skip = 1
 	}
+
+	work := make([]int, 0, upToIdx)
 	for i := upToIdx - 1; i >= 0 && len(work) < pb.maxEntries; i -= skip {
 		if _, ok := pb.cache[i]; !ok {
 			work = append(work, i)
 		}
 	}
-	pb.mu.RUnlock()
 
+	return work
+}
+
+// runBackfillWorker processes frame indices from workCh: reads, colorizes, and
+// caches each frame. It calls invalidate every 100 frames.
+func (pb *PlaybackBuffer) runBackfillWorker(
+	ctx context.Context,
+	workCh <-chan int,
+	player *recording.Player,
+	params colorize.Params,
+	rotation int,
+	invalidate func(),
+	loaded *atomic.Int64,
+) {
+	for idx := range workCh {
+		if ctx.Err() != nil {
+			continue // drain channel without processing
+		}
+
+		frame, frameTime, err := player.ReadFrameAt(idx)
+		if err != nil || ctx.Err() != nil {
+			continue
+		}
+
+		result := colorize.Colorize(frame, params).Rotate(rotation)
+		if ctx.Err() != nil {
+			continue
+		}
+
+		pb.mu.Lock()
+		pb.store(idx, result.Celsius, frameTime)
+		pb.mu.Unlock()
+
+		count := loaded.Add(1)
+		if count%100 == 0 {
+			invalidate()
+		}
+	}
+}
+
+func (pb *PlaybackBuffer) runBackfill(
+	ctx context.Context, player *recording.Player, upToIdx int,
+	params colorize.Params, rotation int, invalidate func(),
+) {
+	// Release mmap pages when backfill finishes (normal completion or cancellation)
+	defer player.ReleaseMmapPages()
+
+	work := pb.backfillWork(upToIdx)
 	if len(work) == 0 {
 		return
 	}
@@ -499,6 +552,7 @@ func (pb *PlaybackBuffer) runBackfill(ctx context.Context, player *recording.Pla
 	if workers > maxBackfillWorkers {
 		workers = maxBackfillWorkers
 	}
+
 	workCh := make(chan int, workers*backfillChanMult)
 	var loaded atomic.Int64
 	var waitGroup sync.WaitGroup
@@ -507,28 +561,7 @@ func (pb *PlaybackBuffer) runBackfill(ctx context.Context, player *recording.Pla
 		waitGroup.Add(1)
 		go func() {
 			defer waitGroup.Done()
-			for idx := range workCh {
-				if ctx.Err() != nil {
-					continue // drain channel without processing
-				}
-				frame, frameTime, err := player.ReadFrameAt(idx)
-				if err != nil || ctx.Err() != nil {
-					continue
-				}
-				result := colorize.Colorize(frame, params).Rotate(rotation)
-				if ctx.Err() != nil {
-					continue
-				}
-
-				pb.mu.Lock()
-				pb.store(idx, result.Celsius, frameTime)
-				pb.mu.Unlock()
-
-				count := loaded.Add(1)
-				if count%100 == 0 {
-					invalidate()
-				}
-			}
+			pb.runBackfillWorker(ctx, workCh, player, params, rotation, invalidate, &loaded)
 		}()
 	}
 
