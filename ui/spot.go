@@ -172,23 +172,23 @@ func (s *Spot) SetLastTemp(temp float32) {
 	s.mu.Unlock()
 }
 
-// History returns up to the last n samples in chronological order.
-// If n <= 0 or n > available, returns all available samples.
-func (s *Spot) History(n int) []Sample {
+// History returns up to the last maxSamples samples in chronological order.
+// If maxSamples <= 0 or maxSamples > available, returns all available samples.
+func (s *Spot) History(maxSamples int) []Sample {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	avail := s.count
-	if n <= 0 || n > avail {
-		n = avail
+	if maxSamples <= 0 || maxSamples > avail {
+		maxSamples = avail
 	}
-	if n == 0 {
+	if maxSamples == 0 {
 		return nil
 	}
 
-	out := make([]Sample, n)
-	start := (s.head - n + historySize) % historySize
-	for i := range n {
+	out := make([]Sample, maxSamples)
+	start := (s.head - maxSamples + historySize) % historySize
+	for i := range maxSamples {
 		out[i] = s.hist[(start+i)%historySize]
 	}
 
@@ -226,44 +226,44 @@ func (s *Spot) Stats() SpotStats {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	st := SpotStats{Count: s.count}
+	stats := SpotStats{Count: s.count}
 	if s.count == 0 {
-		return st
+		return stats
 	}
 
 	start := (s.head - s.count + historySize) % historySize
-	st.Min = s.hist[start].Temp
-	st.Max = s.hist[start].Temp
-	st.Current = s.hist[(s.head-1+historySize)%historySize].Temp
+	stats.Min = s.hist[start].Temp
+	stats.Max = s.hist[start].Temp
+	stats.Current = s.hist[(s.head-1+historySize)%historySize].Temp
 
 	var sum float64
 	for i := range s.count {
-		t := s.hist[(start+i)%historySize].Temp
-		if t < st.Min {
-			st.Min = t
+		temp := s.hist[(start+i)%historySize].Temp
+		if temp < stats.Min {
+			stats.Min = temp
 		}
-		if t > st.Max {
-			st.Max = t
+		if temp > stats.Max {
+			stats.Max = temp
 		}
-		sum += float64(t)
+		sum += float64(temp)
 	}
-	st.Mean = float32(sum / float64(s.count))
+	stats.Mean = float32(sum / float64(s.count))
 
 	// Standard deviation
 	var variance float64
 	for i := range s.count {
-		t := float64(s.hist[(start+i)%historySize].Temp)
-		d := t - float64(st.Mean)
+		tempF := float64(s.hist[(start+i)%historySize].Temp)
+		d := tempF - float64(stats.Mean)
 		variance += d * d
 	}
-	st.StdDev = float32(math.Sqrt(variance / float64(s.count)))
+	stats.StdDev = float32(math.Sqrt(variance / float64(s.count)))
 
 	// Duration
 	first := s.hist[start].Time
 	last := s.hist[(s.head-1+historySize)%historySize].Time
-	st.Duration = last.Sub(first)
+	stats.Duration = last.Sub(first)
 
-	return st
+	return stats
 }
 
 // CorrectedTemp returns the temperature at this spot, applying per-spot
@@ -288,35 +288,35 @@ func (s *Spot) CorrectedTemp(globalTemp, globalEps, ambientC float32) float32 {
 
 // ComputeStats computes statistics over a slice of samples.
 func ComputeStats(samples []Sample) SpotStats {
-	st := SpotStats{Count: len(samples)}
+	stats := SpotStats{Count: len(samples)}
 	if len(samples) == 0 {
-		return st
+		return stats
 	}
 
-	st.Min = samples[0].Temp
-	st.Max = samples[0].Temp
-	st.Current = samples[len(samples)-1].Temp
+	stats.Min = samples[0].Temp
+	stats.Max = samples[0].Temp
+	stats.Current = samples[len(samples)-1].Temp
 
 	var sum float64
-	for _, s := range samples {
-		if s.Temp < st.Min {
-			st.Min = s.Temp
+	for _, samp := range samples {
+		if samp.Temp < stats.Min {
+			stats.Min = samp.Temp
 		}
-		if s.Temp > st.Max {
-			st.Max = s.Temp
+		if samp.Temp > stats.Max {
+			stats.Max = samp.Temp
 		}
-		sum += float64(s.Temp)
+		sum += float64(samp.Temp)
 	}
-	st.Mean = float32(sum / float64(len(samples)))
+	stats.Mean = float32(sum / float64(len(samples)))
 
 	var variance float64
-	for _, s := range samples {
-		d := float64(s.Temp) - float64(st.Mean)
+	for _, samp := range samples {
+		d := float64(samp.Temp) - float64(stats.Mean)
 		variance += d * d
 	}
-	st.StdDev = float32(math.Sqrt(variance / float64(len(samples))))
+	stats.StdDev = float32(math.Sqrt(variance / float64(len(samples))))
 
-	st.Duration = samples[len(samples)-1].Time.Sub(samples[0].Time)
+	stats.Duration = samples[len(samples)-1].Time.Sub(samples[0].Time)
 
-	return st
+	return stats
 }

@@ -185,13 +185,13 @@ func (c *P3Camera) StartStreaming() error {
 	if err := c.sendCommand(commands["start_stream"]); err != nil {
 		return fmt.Errorf("start_stream cmd: %w", err)
 	}
-	if _, err := c.readStatus(); err != nil {
+	if err := c.readStatus(); err != nil {
 		return fmt.Errorf("start_stream status 1: %w", err)
 	}
 	if _, err := c.readResponse(1); err != nil {
 		return fmt.Errorf("start_stream response: %w", err)
 	}
-	if _, err := c.readStatus(); err != nil {
+	if err := c.readStatus(); err != nil {
 		return fmt.Errorf("start_stream status 2: %w", err)
 	}
 
@@ -232,13 +232,13 @@ func (c *P3Camera) StartStreaming() error {
 	if err := c.sendCommand(commands["start_stream"]); err != nil {
 		return fmt.Errorf("final start_stream: %w", err)
 	}
-	if _, err := c.readStatus(); err != nil {
+	if err := c.readStatus(); err != nil {
 		return fmt.Errorf("final start_stream status 1: %w", err)
 	}
 	if _, err := c.readResponse(1); err != nil {
 		return fmt.Errorf("final start_stream response: %w", err)
 	}
-	if _, err := c.readStatus(); err != nil {
+	if err := c.readStatus(); err != nil {
 		return fmt.Errorf("final start_stream status 2: %w", err)
 	}
 
@@ -351,7 +351,7 @@ func (c *P3Camera) TriggerShutter() error {
 	if err := c.sendCommand(commands["shutter"]); err != nil {
 		return fmt.Errorf("shutter cmd: %w", err)
 	}
-	if _, err := c.readStatus(); err != nil {
+	if err := c.readStatus(); err != nil {
 		return fmt.Errorf("shutter status: %w", err)
 	}
 
@@ -372,7 +372,7 @@ func (c *P3Camera) SetGain(mode GainMode) error {
 	if err := c.sendCommand(cmd); err != nil {
 		return fmt.Errorf("gain cmd: %w", err)
 	}
-	if _, err := c.readStatus(); err != nil {
+	if err := c.readStatus(); err != nil {
 		return fmt.Errorf("gain status: %w", err)
 	}
 	c.gainMode = mode
@@ -406,28 +406,28 @@ func (c *P3Camera) readResponse(length int) ([]byte, error) {
 	return buf[:readLen], nil
 }
 
-func (c *P3Camera) readStatus() (byte, error) {
+func (c *P3Camera) readStatus() error {
 	buf := make([]byte, 1)
 	_, err := c.dev.Control(usbCtrlVendorIn, usbBRequestStatus, 0, 0, buf)
 	if err != nil {
-		return buf[0], fmt.Errorf("readStatus: %w", err)
+		return fmt.Errorf("readStatus: %w", err)
 	}
 
-	return buf[0], nil
+	return nil
 }
 
 func (c *P3Camera) readRegister(cmdName string, length int) ([]byte, error) {
 	if err := c.sendCommand(commands[cmdName]); err != nil {
 		return nil, err
 	}
-	if _, err := c.readStatus(); err != nil {
+	if err := c.readStatus(); err != nil {
 		return nil, err
 	}
 	data, err := c.readResponse(length)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := c.readStatus(); err != nil {
+	if err := c.readStatus(); err != nil {
 		return nil, err
 	}
 

@@ -115,24 +115,24 @@ func CorrectEmissivity(tMeasured, tReflected, emissivity float32) float32 {
 // from a celsius frame by computing the median. This assumes most of the
 // scene is at or near ambient temperature.
 func EstimateAmbient(celsius []float32) float32 {
-	n := len(celsius)
-	if n == 0 {
+	count := len(celsius)
+	if count == 0 {
 		return ambientFallbackC
 	}
 
 	// Use a partial sort approach: find the median via quickselect-like sampling
 	// For performance, sample up to maxAmbientSamples pixels evenly spaced
 	step := 1
-	if n > maxAmbientSamples {
-		step = n / maxAmbientSamples
+	if count > maxAmbientSamples {
+		step = count / maxAmbientSamples
 	}
 
 	var sum float64
-	count := 0
-	for i := 0; i < n; i += step {
+	sampled := 0
+	for i := 0; i < count; i += step {
 		sum += float64(celsius[i])
-		count++
+		sampled++
 	}
 
-	return float32(sum / float64(count))
+	return float32(sum / float64(sampled))
 }

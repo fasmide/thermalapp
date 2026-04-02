@@ -74,7 +74,7 @@ func runLive(bufBytes int64) {
 	}
 	defer cam.Close()
 
-	a := ui.NewApp(cam, bufBytes)
+	uiApp := ui.NewApp(cam, bufBytes)
 
 	// USB reader goroutine
 	go func() {
@@ -85,13 +85,13 @@ func runLive(bufBytes int64) {
 
 				continue
 			}
-			a.UpdateFrame(frame)
+			uiApp.UpdateFrame(frame)
 		}
 	}()
 
 	// Gio main loop (must run on main thread)
 	go func() {
-		if err := a.Run(); err != nil {
+		if err := uiApp.Run(); err != nil {
 			log.Printf("ui: %v", err)
 		}
 		os.Exit(0)
@@ -110,8 +110,8 @@ func runPlayback(filename string, bufBytes int64) {
 	h := player.Header()
 	log.Printf("Playing %s: %dx%d, %d frames", filename, h.Width, h.Height, h.FrameCount)
 
-	a := ui.NewApp(player, bufBytes)
-	a.SetPlayer(player)
+	uiApp := ui.NewApp(player, bufBytes)
+	uiApp.SetPlayer(player)
 
 	// Frame reader goroutine (respects original timing)
 	go func() {
@@ -121,12 +121,12 @@ func runPlayback(filename string, bufBytes int64) {
 				// "paused" is not a real error
 				continue
 			}
-			a.UpdateFrame(frame)
+			uiApp.UpdateFrame(frame)
 		}
 	}()
 
 	go func() {
-		if err := a.Run(); err != nil {
+		if err := uiApp.Run(); err != nil {
 			log.Printf("ui: %v", err)
 		}
 		os.Exit(0)

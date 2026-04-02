@@ -87,6 +87,12 @@ const (
 	// centerDiv is the divisor used when centering the image within the available area.
 	centerDiv = 2
 
+	// labelHCenterDiv centers a label horizontally by dividing its width in half.
+	labelHCenterDiv = 2
+
+	// spotLabelYAdj nudges the spot label upward by this many pixels above the marker center.
+	spotLabelYAdj = 2
+
 	// markerDiameterMult multiplies markerSize to get the full diameter of a spot marker.
 	markerDiameterMult = 2
 
@@ -179,15 +185,15 @@ type App struct {
 
 func NewApp(cam camera.Camera, bufSize int64) *App {
 	size := cam.SensorSize()
-	var w app.Window
+	var win app.Window
 	title := "P3 Thermal"
-	w.Option(
+	win.Option(
 		app.Title(title),
 		app.Size(unit.Dp(float32(size.X*windowScaleFactor)), unit.Dp(float32(size.Y*windowScaleFactor+windowHeightPadDp))),
 	)
 
 	return &App{
-		Window: &w,
+		Window: &win,
 		theme:  material.NewTheme(),
 		cam:    cam,
 		params: colorize.Params{
@@ -220,7 +226,7 @@ func (a *App) SetPlayer(p *recording.Player) {
 
 func (a *App) UpdateFrame(frame *camera.Frame) {
 	a.mu.Lock()
-	p := a.params
+	params := a.params
 	rot := a.rotation
 	a.lastFrame = frame
 	a.shutterActive = frame.ShutterActive
@@ -234,7 +240,7 @@ func (a *App) UpdateFrame(frame *camera.Frame) {
 		}
 	}
 
-	result := colorize.Colorize(frame, p).Rotate(rot)
+	result := colorize.Colorize(frame, params).Rotate(rot)
 
 	a.mu.Lock()
 	a.result = result
@@ -333,7 +339,7 @@ func (a *App) UpdateFrame(frame *camera.Frame) {
 func (a *App) refreshDisplay() {
 	a.mu.Lock()
 	frame := a.lastFrame
-	p := a.params
+	params := a.params
 	rot := a.rotation
 	a.mu.Unlock()
 
@@ -341,7 +347,7 @@ func (a *App) refreshDisplay() {
 		return
 	}
 
-	result := colorize.Colorize(frame, p).Rotate(rot)
+	result := colorize.Colorize(frame, params).Rotate(rot)
 
 	a.mu.Lock()
 	a.result = result
@@ -350,8 +356,8 @@ func (a *App) refreshDisplay() {
 	imgW := result.RGBA.Bounds().Dx()
 
 	// Re-read spot temperatures at their current positions.
-	for i, sp := range a.spots {
-		st := sp.GetState()
+	for spotIdx, spot := range a.spots {
+		st := spot.GetState()
 		if !st.Active {
 			continue
 		}
@@ -359,11 +365,11 @@ func (a *App) refreshDisplay() {
 		if idx < 0 || idx >= len(result.Celsius) {
 			continue
 		}
-		if i >= firstUserSpotIdx {
-			temp := sp.CorrectedTemp(result.Celsius[idx], result.GlobalEmissivity, result.AmbientC)
-			sp.SetLastTemp(temp)
+		if spotIdx >= firstUserSpotIdx {
+			temp := spot.CorrectedTemp(result.Celsius[idx], result.GlobalEmissivity, result.AmbientC)
+			spot.SetLastTemp(temp)
 		} else {
-			sp.SetLastTemp(result.Celsius[idx])
+			spot.SetLastTemp(result.Celsius[idx])
 		}
 	}
 
@@ -373,16 +379,16 @@ func (a *App) refreshDisplay() {
 func (a *App) Run() error {
 	var ops op.Ops
 	for {
-		switch e := a.Window.Event().(type) {
+		switch winEv := a.Window.Event().(type) {
 		case app.DestroyEvent:
-			return e.Err
+			return winEv.Err
 		case app.FrameEvent:
-			gtx := app.NewContext(&ops, e)
+			gtx := app.NewContext(&ops, winEv)
 			// Fill window background black
 			paint.Fill(gtx.Ops, color.NRGBA{A: 255})
 			a.handleKeys(gtx)
 			a.doLayout(gtx)
-			e.Frame(gtx.Ops)
+			winEv.Frame(gtx.Ops)
 		}
 	}
 }
@@ -423,23 +429,23 @@ func (a *App) handleKeys(gtx layout.Context) {
 	}
 
 	for {
-		ev, ok := gtx.Source.Event(filters...)
+		inputEv, ok := gtx.Source.Event(filters...)
 		if !ok {
 			break
 		}
-		ke, ok := ev.(key.Event)
-		if !ok || ke.State != key.Press {
+		keyEv, ok := inputEv.(key.Event)
+		if !ok || keyEv.State != key.Press {
 			continue
 		}
 
-		switch ke.Name {
+		switch keyEv.Name {
 		case "Q", key.NameEscape:
 			switch {
-			case ke.Name == key.NameEscape && a.epsDropdown.IsOpen():
+			case keyEv.Name == key.NameEscape && a.epsDropdown.IsOpen():
 				a.epsDropdown.Close()
-			case ke.Name == key.NameEscape && a.bufPanel.IsOpen():
+			case keyEv.Name == key.NameEscape && a.bufPanel.IsOpen():
 				a.bufPanel.Close()
-			case ke.Name == key.NameEscape && a.selectedSpot >= 0:
+			case keyEv.Name == key.NameEscape && a.selectedSpot >= 0:
 				a.selectedSpot = -1
 			default:
 				a.Window.Perform(system.ActionClose)
@@ -499,12 +505,12 @@ func (a *App) handleKeys(gtx layout.Context) {
 			a.showLabels = !a.showLabels
 
 		case "E":
-			backward := ke.Modifiers.Contain(key.ModShift)
+			backward := keyEv.Modifiers.Contain(key.ModShift)
 			nPresets := len(colorize.EmissivityPresets)
 			a.mu.Lock()
 			if a.selectedSpot >= 0 && a.selectedSpot < len(a.spots) {
-				sp := a.spots[a.selectedSpot]
-				_, curIdx := sp.GetEmissivity()
+				selSpot := a.spots[a.selectedSpot]
+				_, curIdx := selSpot.GetEmissivity()
 				if backward {
 					curIdx--
 					if curIdx < -1 {
@@ -517,11 +523,11 @@ func (a *App) handleKeys(gtx layout.Context) {
 					}
 				}
 				if curIdx == -1 {
-					sp.SetEmissivity(0, -1)
+					selSpot.SetEmissivity(0, -1)
 					a.toastMsg = fmt.Sprintf("Spot %d: ε = global", a.selectedSpot)
 				} else {
 					preset := colorize.EmissivityPresets[curIdx]
-					sp.SetEmissivity(preset.Emissivity, curIdx)
+					selSpot.SetEmissivity(preset.Emissivity, curIdx)
 					a.toastMsg = fmt.Sprintf("Spot %d: ε = %.2f  %s", a.selectedSpot, preset.Emissivity, preset.Name)
 				}
 			} else {
@@ -554,7 +560,7 @@ func (a *App) handleKeys(gtx layout.Context) {
 			a.mu.Unlock()
 
 		case "0", "1", "2", "3", "4", "5", "6", "7", "8", "9":
-			idx := int(ke.Name[0] - '0')
+			idx := int(keyEv.Name[0] - '0')
 			a.toggleGraph(idx)
 
 		case "D":
@@ -613,10 +619,10 @@ func (a *App) handleKeys(gtx layout.Context) {
 
 		case key.NameF12:
 			a.mu.Lock()
-			r := a.result
+			snap := a.result
 			a.mu.Unlock()
-			if r != nil && r.RGBA != nil {
-				go a.saveScreenshot(r.RGBA)
+			if snap != nil && snap.RGBA != nil {
+				go a.saveScreenshot(snap.RGBA)
 			}
 		}
 	}
@@ -632,34 +638,34 @@ func (a *App) handlePointer(gtx layout.Context) {
 	}
 
 	for {
-		ev, ok := gtx.Source.Event(filters...)
+		inputEv, ok := gtx.Source.Event(filters...)
 		if !ok {
 			break
 		}
-		pe, ok := ev.(pointer.Event)
+		ptrEv, ok := inputEv.(pointer.Event)
 		if !ok {
 			continue
 		}
 
-		switch pe.Kind {
+		switch ptrEv.Kind {
 		case pointer.Move, pointer.Enter:
-			a.cursorPos = pe.Position
+			a.cursorPos = ptrEv.Position
 			// Map from screen coords to image pixel coords
-			imgX := int((pe.Position.X - float32(a.imgOffsetX)) / a.imgScale)
-			imgY := int((pe.Position.Y - float32(a.imgOffsetY)) / a.imgScale)
+			imgX := int((ptrEv.Position.X - float32(a.imgOffsetX)) / a.imgScale)
+			imgY := int((ptrEv.Position.Y - float32(a.imgOffsetY)) / a.imgScale)
 
 			a.mu.Lock()
-			r := a.result
+			res := a.result
 			a.mu.Unlock()
 
 			cursorSpot := a.spots[spotCursorIdx]
-			if r != nil && imgX >= 0 && imgY >= 0 && imgX < r.RGBA.Bounds().Dx() && imgY < r.RGBA.Bounds().Dy() {
+			if res != nil && imgX >= 0 && imgY >= 0 && imgX < res.RGBA.Bounds().Dx() && imgY < res.RGBA.Bounds().Dy() {
 				cursorSpot.SetPosition(float32(imgX), float32(imgY), true)
 				// Update cursor temperature immediately so the label reflects the current pixel
-				imgW := r.RGBA.Bounds().Dx()
+				imgW := res.RGBA.Bounds().Dx()
 				cIdx := imgY*imgW + imgX
-				if cIdx >= 0 && cIdx < len(r.Celsius) {
-					cursorSpot.SetLastTemp(r.Celsius[cIdx])
+				if cIdx >= 0 && cIdx < len(res.Celsius) {
+					cursorSpot.SetLastTemp(res.Celsius[cIdx])
 				}
 			} else {
 				cursorSpot.SetActive(false)
@@ -673,24 +679,24 @@ func (a *App) handlePointer(gtx layout.Context) {
 			}
 		case pointer.Press:
 			// Map screen to image coords
-			imgX := int((pe.Position.X - float32(a.imgOffsetX)) / a.imgScale)
-			imgY := int((pe.Position.Y - float32(a.imgOffsetY)) / a.imgScale)
+			imgX := int((ptrEv.Position.X - float32(a.imgOffsetX)) / a.imgScale)
+			imgY := int((ptrEv.Position.Y - float32(a.imgOffsetY)) / a.imgScale)
 
 			a.mu.Lock()
-			r := a.result
+			res := a.result
 			a.mu.Unlock()
 
-			if r != nil && imgX >= 0 && imgY >= 0 && imgX < r.RGBA.Bounds().Dx() && imgY < r.RGBA.Bounds().Dy() {
+			if res != nil && imgX >= 0 && imgY >= 0 && imgX < res.RGBA.Bounds().Dx() && imgY < res.RGBA.Bounds().Dy() {
 				// Shift+Click: select/deselect a spot for per-spot emissivity
-				if pe.Modifiers.Contain(key.ModShift) {
+				if ptrEv.Modifiers.Contain(key.ModShift) {
 					a.mu.Lock()
 					found := -1
-					for i := firstUserSpotIdx; i < len(a.spots); i++ {
-						spX, spY := a.spots[i].GetPosition()
+					for spotIdx := firstUserSpotIdx; spotIdx < len(a.spots); spotIdx++ {
+						spX, spY := a.spots[spotIdx].GetPosition()
 						dx := int(spX) - imgX
 						dy := int(spY) - imgY
 						if dx*dx+dy*dy < spotHitRadiusSq {
-							found = i
+							found = spotIdx
 
 							break
 						}
@@ -707,25 +713,25 @@ func (a *App) handlePointer(gtx layout.Context) {
 					// Normal click: add or remove a user measurement point
 					removed := false
 					a.mu.Lock()
-					for i := firstUserSpotIdx; i < len(a.spots); i++ {
-						spX, spY := a.spots[i].GetPosition()
+					for spotIdx := firstUserSpotIdx; spotIdx < len(a.spots); spotIdx++ {
+						spX, spY := a.spots[spotIdx].GetPosition()
 						dx := int(spX) - imgX
 						dy := int(spY) - imgY
 						if dx*dx+dy*dy < spotHitRadiusSq {
 							// Deselect if this was the selected spot
-							if a.selectedSpot == i {
+							if a.selectedSpot == spotIdx {
 								a.selectedSpot = -1
-							} else if a.selectedSpot > i {
+							} else if a.selectedSpot > spotIdx {
 								a.selectedSpot--
 							}
 							// Close graph window if open
-							if gw, ok := a.graphs[i]; ok {
+							if gw, ok := a.graphs[spotIdx]; ok {
 								gw.mu.Lock()
 								gw.window.Perform(system.ActionClose)
 								gw.mu.Unlock()
-								delete(a.graphs, i)
+								delete(a.graphs, spotIdx)
 							}
-							a.spots = append(a.spots[:i], a.spots[i+1:]...)
+							a.spots = append(a.spots[:spotIdx], a.spots[spotIdx+1:]...)
 							// Re-number remaining user spots and fix graph map keys
 							newGraphs := make(map[int]*GraphWindow)
 							for k, v := range a.graphs {
@@ -746,10 +752,10 @@ func (a *App) handlePointer(gtx layout.Context) {
 						}
 					}
 					if !removed {
-						idx := len(a.spots)
-						sp := NewSpot(idx, SpotUser, color.NRGBA{R: 60, G: 220, B: 60, A: 230})
-						sp.SetPosition(float32(imgX), float32(imgY), true)
-						a.spots = append(a.spots, sp)
+						newIdx := len(a.spots)
+						newSpot := NewSpot(newIdx, SpotUser, color.NRGBA{R: 60, G: 220, B: 60, A: 230})
+						newSpot.SetPosition(float32(imgX), float32(imgY), true)
+						a.spots = append(a.spots, newSpot)
 					}
 					a.mu.Unlock()
 				}
@@ -931,19 +937,19 @@ func (a *App) layoutImage(gtx layout.Context, result *colorize.Result) layout.Di
 
 	// Draw the scaled thermal image
 	{
-		s1 := op.Offset(image.Pt(offsetX, offsetY)).Push(gtx.Ops)
-		s2 := clip.Rect{Max: image.Pt(scaledW, scaledH)}.Push(gtx.Ops)
+		offsetOp := op.Offset(image.Pt(offsetX, offsetY)).Push(gtx.Ops)
+		clipOp := clip.Rect{Max: image.Pt(scaledW, scaledH)}.Push(gtx.Ops)
 		aff := f32.Affine2D{}.Scale(f32.Pt(0, 0), f32.Pt(scale, scale))
-		s3 := op.Affine(aff).Push(gtx.Ops)
+		scaleOp := op.Affine(aff).Push(gtx.Ops)
 
 		imgOp := paint.NewImageOp(img)
 		imgOp.Filter = paint.FilterNearest
 		imgOp.Add(gtx.Ops)
 		paint.PaintOp{}.Add(gtx.Ops)
 
-		s3.Pop()
-		s2.Pop()
-		s1.Pop()
+		scaleOp.Pop()
+		clipOp.Pop()
+		offsetOp.Pop()
 	}
 
 	// Draw spot markers and labels
@@ -960,54 +966,58 @@ func (a *App) layoutImage(gtx layout.Context, result *colorize.Result) layout.Di
 		state SpotState
 	}
 	snaps := make([]spotSnap, len(allSpots))
-	for i, sp := range allSpots {
-		snaps[i] = spotSnap{sp: sp, state: sp.GetState()}
+	for snapIdx, sp := range allSpots {
+		snaps[snapIdx] = spotSnap{sp: sp, state: sp.GetState()}
 	}
 
-	for _, sn := range snaps {
-		if !sn.state.Active {
+	for _, snap := range snaps {
+		if !snap.state.Active {
 			continue
 		}
-		if sn.sp.Kind == SpotCursor {
+		if snap.sp.Kind == SpotCursor {
 			continue
 		}
 
-		cx := offsetX + int(sn.state.X*scale+scale/2)
-		cy := offsetY + int(sn.state.Y*scale+scale/2)
+		markerCX := offsetX + int(snap.state.X*scale+scale/2)
+		markerCY := offsetY + int(snap.state.Y*scale+scale/2)
 
 		// Selection highlight: larger yellow ring
-		if sn.sp.Index == selIdx {
+		if snap.sp.Index == selIdx {
 			ringSize := markerSize + selectionRingExtra
-			s := clip.Rect{Min: image.Pt(cx-ringSize, cy-ringSize), Max: image.Pt(cx+ringSize, cy+ringSize)}.Push(gtx.Ops)
+			selRingRect := image.Rectangle{
+				Min: image.Pt(markerCX-ringSize, markerCY-ringSize),
+				Max: image.Pt(markerCX+ringSize, markerCY+ringSize),
+			}
+			selRingOp := clip.Rect(selRingRect).Push(gtx.Ops)
 			paint.Fill(gtx.Ops, color.NRGBA{R: 255, G: 220, B: 0, A: 255})
-			s.Pop()
+			selRingOp.Pop()
 		}
 
-		mx := cx - markerSize
-		my := cy - markerSize
+		mx := markerCX - markerSize
+		my := markerCY - markerSize
 		sz := markerSize * markerDiameterMult
-		s := clip.Rect{Min: image.Pt(mx, my), Max: image.Pt(mx+sz, my+sz)}.Push(gtx.Ops)
-		paint.Fill(gtx.Ops, sn.sp.Color)
-		s.Pop()
+		markerOp := clip.Rect{Min: image.Pt(mx, my), Max: image.Pt(mx+sz, my+sz)}.Push(gtx.Ops)
+		paint.Fill(gtx.Ops, snap.sp.Color)
+		markerOp.Pop()
 	}
 
 	// Temperature labels
 	if a.showLabels {
 		imgW := result.RGBA.Bounds().Dx()
-		for _, sn := range snaps {
-			if !sn.state.Active || sn.sp.Kind == SpotCursor {
+		for _, snap := range snaps {
+			if !snap.state.Active || snap.sp.Kind == SpotCursor {
 				continue
 			}
-			idx := int(sn.state.Y)*imgW + int(sn.state.X)
+			idx := int(snap.state.Y)*imgW + int(snap.state.X)
 			if idx >= 0 && idx < len(result.Celsius) {
-				lx := offsetX + int(sn.state.X*scale+scale/2)
-				ly := offsetY + int(sn.state.Y*scale) - 2
-				temp := sn.sp.CorrectedTemp(result.Celsius[idx], result.GlobalEmissivity, result.AmbientC)
+				labelX := offsetX + int(snap.state.X*scale+scale/2)
+				labelY := offsetY + int(snap.state.Y*scale) - spotLabelYAdj
+				temp := snap.sp.CorrectedTemp(result.Celsius[idx], result.GlobalEmissivity, result.AmbientC)
 				epsSuffix := ""
-				if sn.state.Emissivity > 0 {
-					epsSuffix = fmt.Sprintf(" e%.2f", sn.state.Emissivity)
+				if snap.state.Emissivity > 0 {
+					epsSuffix = fmt.Sprintf(" e%.2f", snap.state.Emissivity)
 				}
-				a.drawSpotLabel(gtx, lx, ly, sn.sp.Index, temp, epsSuffix, sn.sp.Color)
+				a.drawSpotLabel(gtx, labelX, labelY, snap.sp.Index, temp, epsSuffix, snap.sp.Color)
 			}
 		}
 	}
@@ -1016,9 +1026,9 @@ func (a *App) layoutImage(gtx layout.Context, result *colorize.Result) layout.Di
 	cursorSpot := a.spots[spotCursorIdx]
 	cursorState := snaps[spotCursorIdx].state
 	if cursorState.Active {
-		cx := int(a.cursorPos.X) + cursorLabelXOff
-		cy := int(a.cursorPos.Y) - cursorLabelYOff
-		a.drawTempLabel(gtx, cx, cy, cursorSpot.LastTemp(), cursorSpot.Color)
+		cursorLX := int(a.cursorPos.X) + cursorLabelXOff
+		cursorLY := int(a.cursorPos.Y) - cursorLabelYOff
+		a.drawTempLabel(gtx, cursorLX, cursorLY, cursorSpot.LastTemp(), cursorSpot.Color)
 	}
 
 	// NUC (shutter) indicator — top-right of image area
@@ -1033,7 +1043,9 @@ func (a *App) layoutImage(gtx layout.Context, result *colorize.Result) layout.Di
 }
 
 // drawSpotLabel draws a temperature label with the spot index prefix.
-func (a *App) drawSpotLabel(gtx layout.Context, sx, sy int, index int, temp float32, suffix string, col color.NRGBA) {
+func (a *App) drawSpotLabel(
+	gtx layout.Context, labelX, labelY int, index int, temp float32, suffix string, col color.NRGBA,
+) {
 	txt := fmt.Sprintf("[%d] %.1f\u00b0%s", index, temp, suffix)
 
 	// Measure
@@ -1050,16 +1062,16 @@ func (a *App) drawSpotLabel(gtx layout.Context, sx, sy int, index int, temp floa
 	})
 	call := macro.Stop()
 
-	ox := sx - dims.Size.X/2
-	oy := sy - dims.Size.Y
-	s := op.Offset(image.Pt(ox, oy)).Push(gtx.Ops)
+	ox := labelX - dims.Size.X/labelHCenterDiv
+	oy := labelY - dims.Size.Y
+	offsetOp := op.Offset(image.Pt(ox, oy)).Push(gtx.Ops)
 
 	pill := clip.Rect{Max: dims.Size}.Push(gtx.Ops)
 	paint.Fill(gtx.Ops, col)
 	pill.Pop()
 
 	call.Add(gtx.Ops)
-	s.Pop()
+	offsetOp.Pop()
 }
 
 // toggleGraph opens or closes a graph window for the spot at the given index.
@@ -1091,7 +1103,7 @@ func (a *App) toggleGraph(idx int) {
 }
 
 // drawTempLabel draws a temperature reading with a small background tag at the given screen position.
-func (a *App) drawTempLabel(gtx layout.Context, sx, sy int, temp float32, col color.NRGBA) {
+func (a *App) drawTempLabel(gtx layout.Context, labelX, labelY int, temp float32, col color.NRGBA) {
 	txt := fmt.Sprintf("%.1f\u00b0", temp)
 
 	// Measure
@@ -1109,9 +1121,9 @@ func (a *App) drawTempLabel(gtx layout.Context, sx, sy int, temp float32, col co
 	call := macro.Stop()
 
 	// Position: center horizontally above the marker
-	ox := sx - dims.Size.X/2
-	oy := sy - dims.Size.Y
-	s := op.Offset(image.Pt(ox, oy)).Push(gtx.Ops)
+	ox := labelX - dims.Size.X/labelHCenterDiv
+	oy := labelY - dims.Size.Y
+	offsetOp := op.Offset(image.Pt(ox, oy)).Push(gtx.Ops)
 
 	// Background pill
 	pill := clip.Rect{Max: dims.Size}.Push(gtx.Ops)
@@ -1119,7 +1131,7 @@ func (a *App) drawTempLabel(gtx layout.Context, sx, sy int, temp float32, col co
 	pill.Pop()
 
 	call.Add(gtx.Ops)
-	s.Pop()
+	offsetOp.Pop()
 }
 
 // drawNUCIndicator draws a "NUC" badge at the top-right of the image area.
@@ -1140,14 +1152,14 @@ func (a *App) drawNUCIndicator(gtx layout.Context, rightX, topY int) {
 
 	ox := rightX - dims.Size.X - gtx.Dp(unit.Dp(nucBadgeInsetDp))
 	oy := topY + gtx.Dp(unit.Dp(nucBadgeInsetDp))
-	s := op.Offset(image.Pt(ox, oy)).Push(gtx.Ops)
+	offsetOp := op.Offset(image.Pt(ox, oy)).Push(gtx.Ops)
 
 	bg := clip.Rect{Max: dims.Size}.Push(gtx.Ops)
 	paint.Fill(gtx.Ops, color.NRGBA{R: 200, G: 40, B: 40, A: 220})
 	bg.Pop()
 
 	call.Add(gtx.Ops)
-	s.Pop()
+	offsetOp.Pop()
 }
 
 func (a *App) layoutColorbar(gtx layout.Context, result *colorize.Result) layout.Dimensions {
@@ -1161,17 +1173,17 @@ func (a *App) layoutColorbar(gtx layout.Context, result *colorize.Result) layout
 
 	// Draw the gradient bar
 	{
-		s1 := clip.Rect{Max: image.Pt(barW, barH)}.Push(gtx.Ops)
+		barClipOp := clip.Rect{Max: image.Pt(barW, barH)}.Push(gtx.Ops)
 		aff := f32.Affine2D{}.Scale(f32.Pt(0, 0), f32.Pt(scaleX, scaleY))
-		s2 := op.Affine(aff).Push(gtx.Ops)
+		barScaleOp := op.Affine(aff).Push(gtx.Ops)
 
 		imgOp := paint.NewImageOp(barImg)
 		imgOp.Filter = paint.FilterLinear
 		imgOp.Add(gtx.Ops)
 		paint.PaintOp{}.Add(gtx.Ops)
 
-		s2.Pop()
-		s1.Pop()
+		barScaleOp.Pop()
+		barClipOp.Pop()
 	}
 
 	// Pick contrasting text colors based on LUT endpoints
@@ -1307,13 +1319,13 @@ func (a *App) layoutPlaybackBar(gtx layout.Context) layout.Dimensions {
 func (a *App) layoutSlider(gtx layout.Context, current, total, _ int) layout.Dimensions {
 	sliderH := gtx.Dp(unit.Dp(sliderHeightDp))
 	trackH := gtx.Dp(unit.Dp(sliderTrackHeightDp))
-	w := gtx.Constraints.Max.X
-	if w < 1 {
-		w = 1
+	sliderW := gtx.Constraints.Max.X
+	if sliderW < 1 {
+		sliderW = 1
 	}
 
 	// Slider track area — register pointer events
-	area := clip.Rect{Max: image.Pt(w, sliderH)}.Push(gtx.Ops)
+	area := clip.Rect{Max: image.Pt(sliderW, sliderH)}.Push(gtx.Ops)
 	event.Op(gtx.Ops, &a.sliderTag)
 	area.Pop()
 
@@ -1326,29 +1338,29 @@ func (a *App) layoutSlider(gtx layout.Context, current, total, _ int) layout.Dim
 		},
 	}
 	for {
-		ev, ok := gtx.Source.Event(filters...)
+		inputEv, ok := gtx.Source.Event(filters...)
 		if !ok {
 			break
 		}
-		pe, ok := ev.(pointer.Event)
+		ptrEv, ok := inputEv.(pointer.Event)
 		if !ok {
 			continue
 		}
-		switch pe.Kind {
+		switch ptrEv.Kind {
 		case pointer.Press:
 			a.sliderDragging = true
-			idx := a.sliderPosToFrame(pe.Position.X, float32(w), total)
+			idx := a.sliderPosToFrame(ptrEv.Position.X, float32(sliderW), total)
 			a.seekToFrame(idx)
 		case pointer.Drag:
 			if a.sliderDragging {
-				idx := a.sliderPosToFrame(pe.Position.X, float32(w), total)
+				idx := a.sliderPosToFrame(ptrEv.Position.X, float32(sliderW), total)
 				a.seekToFrame(idx)
 			}
 		case pointer.Release:
 			a.sliderDragging = false
 		case pointer.Scroll:
 			if a.player != nil && a.player.IsPaused() {
-				skip := int(pe.Scroll.Y)
+				skip := int(ptrEv.Scroll.Y)
 				idx := current + skip
 				if idx < 0 {
 					idx = 0
@@ -1362,35 +1374,35 @@ func (a *App) layoutSlider(gtx layout.Context, current, total, _ int) layout.Dim
 	}
 
 	// Draw track background
-	trackY := (sliderH - trackH) / 2
+	trackY := (sliderH - trackH) / centerDiv
 	{
-		s := clip.Rect{Min: image.Pt(0, trackY), Max: image.Pt(w, trackY+trackH)}.Push(gtx.Ops)
+		trackOp := clip.Rect{Min: image.Pt(0, trackY), Max: image.Pt(sliderW, trackY+trackH)}.Push(gtx.Ops)
 		paint.Fill(gtx.Ops, color.NRGBA{R: 80, G: 80, B: 80, A: 255})
-		s.Pop()
+		trackOp.Pop()
 	}
 
 	// Draw filled portion
 	frac := float32(current) / float32(total)
-	filledW := int(frac * float32(w))
+	filledW := int(frac * float32(sliderW))
 	{
-		s := clip.Rect{Min: image.Pt(0, trackY), Max: image.Pt(filledW, trackY+trackH)}.Push(gtx.Ops)
+		fillOp := clip.Rect{Min: image.Pt(0, trackY), Max: image.Pt(filledW, trackY+trackH)}.Push(gtx.Ops)
 		paint.Fill(gtx.Ops, color.NRGBA{R: 80, G: 140, B: 220, A: 255})
-		s.Pop()
+		fillOp.Pop()
 	}
 
 	// Draw thumb
 	thumbW := gtx.Dp(unit.Dp(sliderThumbWidthDp))
-	thumbX := filledW - thumbW/2
+	thumbX := filledW - thumbW/centerDiv
 	if thumbX < 0 {
 		thumbX = 0
 	}
 	{
-		s := clip.Rect{Min: image.Pt(thumbX, 0), Max: image.Pt(thumbX+thumbW, sliderH)}.Push(gtx.Ops)
+		thumbOp := clip.Rect{Min: image.Pt(thumbX, 0), Max: image.Pt(thumbX+thumbW, sliderH)}.Push(gtx.Ops)
 		paint.Fill(gtx.Ops, color.NRGBA{R: 160, G: 200, B: 255, A: 255})
-		s.Pop()
+		thumbOp.Pop()
 	}
 
-	return layout.Dimensions{Size: image.Pt(w, sliderH)}
+	return layout.Dimensions{Size: image.Pt(sliderW, sliderH)}
 }
 
 func (a *App) sliderPosToFrame(x float32, width float32, total int) int {
@@ -1463,7 +1475,7 @@ func (a *App) invalidateGraphs() {
 
 func (a *App) layoutStatus(gtx layout.Context, _ *colorize.Result) layout.Dimensions {
 	a.mu.Lock()
-	p := a.params
+	params := a.params
 	eIdx := a.emissivityIdx
 	a.mu.Unlock()
 
@@ -1495,7 +1507,7 @@ func (a *App) layoutStatus(gtx layout.Context, _ *colorize.Result) layout.Dimens
 	}
 
 	leftStatus := fmt.Sprintf("[C] %-10s  |  [A] %-10s  |  [G] Gain: %-4s  |",
-		p.Palette, agcName(p.Mode), gainStr)
+		params.Palette, agcName(params.Mode), gainStr)
 	rightStatus := fmt.Sprintf("|  [R] %d\u00b0  |  [H] Help%s", a.rotation*degreesPerRotStep, recStr)
 
 	lightGray := color.NRGBA{R: 220, G: 220, B: 220, A: 255}
@@ -1627,19 +1639,19 @@ func (a *App) layoutHelp(gtx layout.Context) {
 					return lbl.Layout(gtx)
 				})
 		}))
-		for _, r := range sec.rows {
+		for _, row := range sec.rows {
 			children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 				return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
 					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 						gtx.Constraints.Min.X = keyW
 						gtx.Constraints.Max.X = keyW
-						lbl := material.Body2(a.theme, r.key)
+						lbl := material.Body2(a.theme, row.key)
 						lbl.Color = lightGray
 
 						return lbl.Layout(gtx)
 					}),
 					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						lbl := material.Body2(a.theme, r.desc)
+						lbl := material.Body2(a.theme, row.desc)
 						lbl.Color = lightGray
 
 						return lbl.Layout(gtx)
@@ -1679,7 +1691,7 @@ func (a *App) layoutToast(gtx layout.Context, msg string) {
 	call := macro.Stop()
 
 	// Center horizontally, near bottom
-	x := (gtx.Constraints.Max.X - dims.Size.X) / 2
+	x := (gtx.Constraints.Max.X - dims.Size.X) / centerDiv
 	y := gtx.Constraints.Max.Y - gtx.Dp(unit.Dp(toastBottomOffsetDp))
 	defer op.Offset(image.Pt(x, y)).Push(gtx.Ops).Pop()
 
@@ -1701,37 +1713,37 @@ func agcName(m colorize.AGCMode) string {
 	return "?"
 }
 
-func humanSize(b int64) string {
+func humanSize(bytes int64) string {
 	const (
-		KB = 1024
-		MB = 1024 * KB
-		GB = 1024 * MB
-		TB = 1024 * GB
+		kilobyte = 1024
+		megabyte = 1024 * kilobyte
+		gigabyte = 1024 * megabyte
+		terabyte = 1024 * gigabyte
 	)
 	switch {
-	case b >= TB:
-		return fmt.Sprintf("%.1f TB", float64(b)/float64(TB))
-	case b >= GB:
-		return fmt.Sprintf("%.1f GB", float64(b)/float64(GB))
-	case b >= MB:
-		return fmt.Sprintf("%.1f MB", float64(b)/float64(MB))
-	case b >= KB:
-		return fmt.Sprintf("%.1f KB", float64(b)/float64(KB))
+	case bytes >= terabyte:
+		return fmt.Sprintf("%.1f TB", float64(bytes)/float64(terabyte))
+	case bytes >= gigabyte:
+		return fmt.Sprintf("%.1f GB", float64(bytes)/float64(gigabyte))
+	case bytes >= megabyte:
+		return fmt.Sprintf("%.1f MB", float64(bytes)/float64(megabyte))
+	case bytes >= kilobyte:
+		return fmt.Sprintf("%.1f KB", float64(bytes)/float64(kilobyte))
 	default:
-		return fmt.Sprintf("%d B", b)
+		return fmt.Sprintf("%d B", bytes)
 	}
 }
 
 func (a *App) saveScreenshot(img *image.RGBA) {
 	name := fmt.Sprintf("thermal_%s.png", time.Now().Format("20060102_150405"))
-	f, err := os.Create(name)
+	outFile, err := os.Create(name)
 	if err != nil {
 		log.Printf("screenshot: %v", err)
 
 		return
 	}
-	defer f.Close()
-	if err := png.Encode(f, img); err != nil {
+	defer outFile.Close()
+	if err := png.Encode(outFile, img); err != nil {
 		log.Printf("screenshot encode: %v", err)
 
 		return

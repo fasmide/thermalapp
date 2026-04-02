@@ -52,7 +52,7 @@ func availableMemoryBytes() int64 {
 // PixelQuerier provides historical temperature data at a pixel position.
 // Implemented by FrameBuffer (live) and PlaybackBuffer (recording playback).
 type PixelQuerier interface {
-	QueryPixel(x, y, n int) []Sample
+	QueryPixel(pixX, pixY, maxSamples int) []Sample
 }
 
 // BufferedFrame is a single celsius frame stored in the ring buffer.
@@ -99,12 +99,12 @@ func (fb *FrameBuffer) computeMax(width, height int) {
 // Add appends a celsius frame to the buffer. The celsius slice must have
 // len == width*height matching the buffer dimensions.
 // Frames arriving faster than the configured sample interval are silently dropped.
-func (fb *FrameBuffer) Add(celsius []float32, t time.Time) {
+func (fb *FrameBuffer) Add(celsius []float32, timestamp time.Time) {
 	fb.mu.Lock()
 	defer fb.mu.Unlock()
 
 	// Throttle: skip frame if it's too soon since the last stored frame
-	if fb.sampleInterval > 0 && !fb.lastAdd.IsZero() && t.Sub(fb.lastAdd) < fb.sampleInterval {
+	if fb.sampleInterval > 0 && !fb.lastAdd.IsZero() && timestamp.Sub(fb.lastAdd) < fb.sampleInterval {
 		return
 	}
 
@@ -113,10 +113,10 @@ func (fb *FrameBuffer) Add(celsius []float32, t time.Time) {
 		return
 	}
 
-	fb.lastAdd = t
+	fb.lastAdd = timestamp
 
 	f := &fb.frames[fb.head]
-	f.Time = t
+	f.Time = timestamp
 	if len(f.Celsius) != expected {
 		f.Celsius = make([]float32, expected)
 	}
@@ -128,26 +128,26 @@ func (fb *FrameBuffer) Add(celsius []float32, t time.Time) {
 	}
 }
 
-// QueryPixel returns up to n temperature samples at pixel (x,y) in chronological
-// order. If n <= 0, returns all available samples.
-func (fb *FrameBuffer) QueryPixel(x, y, n int) []Sample {
+// QueryPixel returns up to maxSamples temperature samples at pixel (pixX,pixY) in chronological
+// order. If maxSamples <= 0, returns all available samples.
+func (fb *FrameBuffer) QueryPixel(pixX, pixY, maxSamples int) []Sample {
 	fb.mu.RLock()
 	defer fb.mu.RUnlock()
 
-	if fb.count == 0 || x < 0 || y < 0 || x >= fb.width || y >= fb.height {
+	if fb.count == 0 || pixX < 0 || pixY < 0 || pixX >= fb.width || pixY >= fb.height {
 		return nil
 	}
 
 	avail := fb.count
-	if n <= 0 || n > avail {
-		n = avail
+	if maxSamples <= 0 || maxSamples > avail {
+		maxSamples = avail
 	}
 
-	pixIdx := y*fb.width + x
-	out := make([]Sample, n)
-	start := (fb.head - n + fb.maxFrames) % fb.maxFrames
+	pixIdx := pixY*fb.width + pixX
+	out := make([]Sample, maxSamples)
+	start := (fb.head - maxSamples + fb.maxFrames) % fb.maxFrames
 
-	for i := range n {
+	for i := range maxSamples {
 		f := &fb.frames[(start+i)%fb.maxFrames]
 		out[i] = Sample{Time: f.Time, Temp: f.Celsius[pixIdx]}
 	}
@@ -268,7 +268,7 @@ func NewPlaybackBuffer(width, height int, totalFrames int, maxBytes int64) *Play
 // Add caches the celsius frame at the given recording frame index and
 // updates the current playback position. Used by UpdateFrame during playback.
 // Respects sampleSkip: only frames aligned to the skip grid are stored.
-func (pb *PlaybackBuffer) Add(frameIdx int, celsius []float32, t time.Time) {
+func (pb *PlaybackBuffer) Add(frameIdx int, celsius []float32, timestamp time.Time) {
 	pb.mu.Lock()
 	defer pb.mu.Unlock()
 	pb.currentIdx = frameIdx
@@ -276,11 +276,11 @@ func (pb *PlaybackBuffer) Add(frameIdx int, celsius []float32, t time.Time) {
 	if skip > 1 && frameIdx%skip != 0 {
 		return // not on the sample grid
 	}
-	pb.store(frameIdx, celsius, t)
+	pb.store(frameIdx, celsius, timestamp)
 }
 
 // store inserts a frame into the cache. Caller must hold pb.mu.
-func (pb *PlaybackBuffer) store(frameIdx int, celsius []float32, t time.Time) {
+func (pb *PlaybackBuffer) store(frameIdx int, celsius []float32, timestamp time.Time) {
 	expected := pb.width * pb.height
 	if len(celsius) != expected {
 		return
@@ -291,13 +291,13 @@ func (pb *PlaybackBuffer) store(frameIdx int, celsius []float32, t time.Time) {
 		pb.evict(frameIdx)
 	}
 
-	e := pb.cache[frameIdx]
-	if e == nil {
-		e = &pbEntry{celsius: make([]float32, expected)}
-		pb.cache[frameIdx] = e
+	entry := pb.cache[frameIdx]
+	if entry == nil {
+		entry = &pbEntry{celsius: make([]float32, expected)}
+		pb.cache[frameIdx] = entry
 	}
-	copy(e.celsius, celsius)
-	e.time = t
+	copy(entry.celsius, celsius)
+	entry.time = timestamp
 }
 
 // evict removes the cached frame farthest from currentIdx, but never the
@@ -323,17 +323,17 @@ func (pb *PlaybackBuffer) evict(addIdx int) {
 	}
 }
 
-// QueryPixel returns up to n temperature samples at pixel (x,y) from cached frames
+// QueryPixel returns up to maxSamples temperature samples at pixel (px,py) from cached frames
 // up to and including the current playback position, in frame order.
-func (pb *PlaybackBuffer) QueryPixel(x, y, n int) []Sample {
+func (pb *PlaybackBuffer) QueryPixel(pixX, pixY, maxSamples int) []Sample {
 	pb.mu.RLock()
 	defer pb.mu.RUnlock()
 
-	if len(pb.cache) == 0 || x < 0 || y < 0 || x >= pb.width || y >= pb.height {
+	if len(pb.cache) == 0 || pixX < 0 || pixY < 0 || pixX >= pb.width || pixY >= pb.height {
 		return nil
 	}
 
-	pixIdx := y*pb.width + x
+	pixIdx := pixY*pb.width + pixX
 
 	// Collect frame indices <= currentIdx
 	indices := make([]int, 0, len(pb.cache))
@@ -344,14 +344,14 @@ func (pb *PlaybackBuffer) QueryPixel(x, y, n int) []Sample {
 	}
 	sort.Ints(indices)
 
-	if n > 0 && len(indices) > n {
-		indices = indices[len(indices)-n:]
+	if maxSamples > 0 && len(indices) > maxSamples {
+		indices = indices[len(indices)-maxSamples:]
 	}
 
 	out := make([]Sample, len(indices))
 	for i, idx := range indices {
-		e := pb.cache[idx]
-		out[i] = Sample{Time: e.time, Temp: e.celsius[pixIdx]}
+		entry := pb.cache[idx]
+		out[i] = Sample{Time: entry.time, Temp: entry.celsius[pixIdx]}
 	}
 
 	return out
@@ -499,15 +499,15 @@ func (pb *PlaybackBuffer) runBackfill(ctx context.Context, player *recording.Pla
 	if workers > maxBackfillWorkers {
 		workers = maxBackfillWorkers
 	}
-	ch := make(chan int, workers*backfillChanMult)
+	workCh := make(chan int, workers*backfillChanMult)
 	var loaded atomic.Int64
-	var wg sync.WaitGroup
+	var waitGroup sync.WaitGroup
 
 	for range workers {
-		wg.Add(1)
+		waitGroup.Add(1)
 		go func() {
-			defer wg.Done()
-			for idx := range ch {
+			defer waitGroup.Done()
+			for idx := range workCh {
 				if ctx.Err() != nil {
 					continue // drain channel without processing
 				}
@@ -524,8 +524,8 @@ func (pb *PlaybackBuffer) runBackfill(ctx context.Context, player *recording.Pla
 				pb.store(idx, result.Celsius, frameTime)
 				pb.mu.Unlock()
 
-				n := loaded.Add(1)
-				if n%100 == 0 {
+				count := loaded.Add(1)
+				if count%100 == 0 {
 					invalidate()
 				}
 			}
@@ -543,10 +543,10 @@ func (pb *PlaybackBuffer) runBackfill(ctx context.Context, player *recording.Pla
 		if full {
 			break
 		}
-		ch <- idx
+		workCh <- idx
 	}
-	close(ch)
-	wg.Wait()
+	close(workCh)
+	waitGroup.Wait()
 
 	if loaded.Load() > 0 {
 		invalidate()

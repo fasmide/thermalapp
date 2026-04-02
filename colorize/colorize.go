@@ -86,51 +86,51 @@ type Result struct {
 
 // Colorize converts a camera Frame into a colorized RGBA image.
 func Colorize(frame *camera.Frame, params Params) *Result {
-	w, h := frame.Width, frame.Height
+	width, height := frame.Width, frame.Height
 	result := &Result{
-		RGBA:  image.NewRGBA(image.Rect(0, 0, w, h)),
-		Width: w,
+		RGBA:  image.NewRGBA(image.Rect(0, 0, width, height)),
+		Width: width,
 	}
 	lut := params.Palette.LUT()
 
 	if params.Mode == AGCHardware {
 		// Use the IR brightness plane directly
-		for y := range h {
-			for x := range w {
-				idx := y*w + x
-				v := frame.IR[idx]
-				c := lut[v]
-				result.RGBA.SetRGBA(x, y, color.RGBA{c[0], c[1], c[2], 255})
+		for row := range height {
+			for col := range width {
+				idx := row*width + col
+				val := frame.IR[idx]
+				rgb := lut[val]
+				result.RGBA.SetRGBA(col, row, color.RGBA{rgb[0], rgb[1], rgb[2], 255})
 			}
 		}
 		// Still compute celsius for cursor readout
 		result.Celsius = make([]float32, len(frame.Thermal))
-		for i, raw := range frame.Thermal {
-			result.Celsius[i] = camera.ToCelsius(raw)
+		for idx, raw := range frame.Thermal {
+			result.Celsius[idx] = camera.ToCelsius(raw)
 		}
 		// Apply global emissivity correction
 		eps := params.Emissivity
 		if eps > 0 && eps < 1.0 {
 			tRefl := EstimateAmbient(result.Celsius)
 			result.AmbientC = tRefl
-			for i := range result.Celsius {
-				result.Celsius[i] = CorrectEmissivity(result.Celsius[i], tRefl, eps)
+			for idx := range result.Celsius {
+				result.Celsius[idx] = CorrectEmissivity(result.Celsius[idx], tRefl, eps)
 			}
 		}
 		result.GlobalEmissivity = eps
 		if len(result.Celsius) > 0 {
 			result.MinC = result.Celsius[0]
 			result.MaxC = result.Celsius[0]
-			for i, c := range result.Celsius {
-				if c < result.MinC {
-					result.MinC = c
-					result.MinX = i % w
-					result.MinY = i / w
+			for idx, cel := range result.Celsius {
+				if cel < result.MinC {
+					result.MinC = cel
+					result.MinX = idx % width
+					result.MinY = idx / width
 				}
-				if c > result.MaxC {
-					result.MaxC = c
-					result.MaxX = i % w
-					result.MaxY = i / w
+				if cel > result.MaxC {
+					result.MaxC = cel
+					result.MaxX = idx % width
+					result.MaxY = idx / width
 				}
 			}
 		}
@@ -139,10 +139,10 @@ func Colorize(frame *camera.Frame, params Params) *Result {
 	}
 
 	// Convert thermal data to celsius
-	n := len(frame.Thermal)
-	celsius := make([]float32, n)
-	for i, raw := range frame.Thermal {
-		celsius[i] = camera.ToCelsius(raw)
+	count := len(frame.Thermal)
+	celsius := make([]float32, count)
+	for idx, raw := range frame.Thermal {
+		celsius[idx] = camera.ToCelsius(raw)
 	}
 
 	// Apply global emissivity correction
@@ -160,16 +160,16 @@ func Colorize(frame *camera.Frame, params Params) *Result {
 	// Find min/max
 	result.MinC = celsius[0]
 	result.MaxC = celsius[0]
-	for i, c := range celsius {
-		if c < result.MinC {
-			result.MinC = c
-			result.MinX = i % w
-			result.MinY = i / w
+	for idx, cel := range celsius {
+		if cel < result.MinC {
+			result.MinC = cel
+			result.MinX = idx % width
+			result.MinY = idx / width
 		}
-		if c > result.MaxC {
-			result.MaxC = c
-			result.MaxX = i % w
-			result.MaxY = i / w
+		if cel > result.MaxC {
+			result.MaxC = cel
+			result.MaxX = idx % width
+			result.MaxY = idx / width
 		}
 	}
 
@@ -186,9 +186,9 @@ func Colorize(frame *camera.Frame, params Params) *Result {
 	}
 
 	span := high - low
-	for y := range h {
-		for x := range w {
-			idx := y*w + x
+	for row := range height {
+		for col := range width {
+			idx := row*width + col
 			norm := (celsius[idx] - low) / span
 			if norm < 0 {
 				norm = 0
@@ -196,8 +196,8 @@ func Colorize(frame *camera.Frame, params Params) *Result {
 				norm = 1
 			}
 			lutIdx := uint8(norm * maxLUTIndex)
-			c := lut[lutIdx]
-			result.RGBA.SetRGBA(x, y, color.RGBA{c[0], c[1], c[2], 255})
+			rgb := lut[lutIdx]
+			result.RGBA.SetRGBA(col, row, color.RGBA{rgb[0], rgb[1], rgb[2], 255})
 		}
 	}
 
@@ -206,18 +206,18 @@ func Colorize(frame *camera.Frame, params Params) *Result {
 
 // percentileBounds returns the p_low and p_high percentile values from data.
 func percentileBounds(data []float32, pLow, pHigh float64) (float32, float32) {
-	n := len(data)
-	if n == 0 {
+	count := len(data)
+	if count == 0 {
 		return 0, 1
 	}
 
 	// Sort a copy
-	sorted := make([]float32, n)
+	sorted := make([]float32, count)
 	copy(sorted, data)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
 
-	lo := sorted[int(math.Floor(pLow/100*float64(n-1)))]
-	hi := sorted[int(math.Ceil(pHigh/100*float64(n-1)))]
+	lo := sorted[int(math.Floor(pLow/100*float64(count-1)))]
+	hi := sorted[int(math.Ceil(pHigh/100*float64(count-1)))]
 
 	return lo, hi
 }
@@ -258,20 +258,20 @@ func (r *Result) Rotate(steps int) *Result {
 	dst := image.NewRGBA(image.Rect(0, 0, dstW, dstH))
 	celsius := make([]float32, len(r.Celsius))
 
-	for sy := range srcH {
-		for sx := range srcW {
-			var dx, dy int
+	for srcRow := range srcH {
+		for srcCol := range srcW {
+			var destX, destY int
 			switch steps {
 			case 1: // 90° CW
-				dx, dy = srcH-1-sy, sx
+				destX, destY = srcH-1-srcRow, srcCol
 			case rot180Steps: // 180°
-				dx, dy = srcW-1-sx, srcH-1-sy
+				destX, destY = srcW-1-srcCol, srcH-1-srcRow
 			case rot270Steps: // 270° CW
-				dx, dy = sy, srcW-1-sx
+				destX, destY = srcRow, srcW-1-srcCol
 			}
-			dst.SetRGBA(dx, dy, r.RGBA.RGBAAt(sx, sy))
-			srcIdx := sy*srcW + sx
-			dstIdx := dy*dstW + dx
+			dst.SetRGBA(destX, destY, r.RGBA.RGBAAt(srcCol, srcRow))
+			srcIdx := srcRow*srcW + srcCol
+			dstIdx := destY*dstW + destX
 			if srcIdx < len(r.Celsius) && dstIdx < len(celsius) {
 				celsius[dstIdx] = r.Celsius[srcIdx]
 			}
@@ -279,29 +279,29 @@ func (r *Result) Rotate(steps int) *Result {
 	}
 
 	// Rotate min/max coords
-	rotX := func(x, y int) int {
+	rotX := func(col, row int) int {
 		switch steps {
 		case 1:
-			return srcH - 1 - y
+			return srcH - 1 - row
 		case rot180Steps:
-			return srcW - 1 - x
+			return srcW - 1 - col
 		case rot270Steps:
-			return y
+			return row
 		}
 
-		return x
+		return col
 	}
-	rotY := func(x, y int) int {
+	rotY := func(col, row int) int {
 		switch steps {
 		case 1:
-			return x
+			return col
 		case rot180Steps:
-			return srcH - 1 - y
+			return srcH - 1 - row
 		case rot270Steps:
-			return srcW - 1 - x
+			return srcW - 1 - col
 		}
 
-		return y
+		return row
 	}
 
 	return &Result{

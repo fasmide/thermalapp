@@ -89,58 +89,58 @@ var JetLUT [256][3]uint8
 var GrayscaleLUT [256][3]uint8
 
 func init() {
-	for i := range 256 {
-		t := float64(i) / lutMaxFloat
+	for lutIdx := range 256 {
+		normalized := float64(lutIdx) / lutMaxFloat
 
 		// Iron/Hot colormap
-		r := clampF(1.5*t-ironRShift, 0, 1)
-		g := clampF(1.5*t-ironGShift, 0, 1)
-		var b float64
+		red := clampF(1.5*normalized - ironRShift)
+		green := clampF(1.5*normalized - ironGShift)
+		var blue float64
 		switch {
-		case t < ironBlueLow:
-			b = clampF(ironBlueSlope*t, 0, 1)
-		case t < ironBlueHigh:
-			b = clampF(1.0-ironBlueSlope*(t-ironBlueLow), 0, 1)
+		case normalized < ironBlueLow:
+			blue = clampF(ironBlueSlope * normalized)
+		case normalized < ironBlueHigh:
+			blue = clampF(1.0 - ironBlueSlope*(normalized-ironBlueLow))
 		default:
-			b = 0
+			blue = 0
 		}
-		IronLUT[i] = [3]uint8{uint8(r * lutMaxFloat), uint8(g * lutMaxFloat), uint8(b * lutMaxFloat)}
+		IronLUT[lutIdx] = [3]uint8{uint8(red * lutMaxFloat), uint8(green * lutMaxFloat), uint8(blue * lutMaxFloat)}
 	}
 
-	for i := range 256 {
-		t := float64(i) / lutMaxFloat
-		var r, g, b float64
+	for lutIdx := range 256 {
+		normalized := float64(lutIdx) / lutMaxFloat
+		var red, green, blue float64
 		switch {
-		case t < jetT1:
-			r, g, b = 0, 0, jetBlueBase+t*jetSlope
-		case t < jetT2:
-			r, g, b = 0, (t-jetT1)*jetSlope, 1
-		case t < jetT3:
-			r, g, b = (t-jetT2)*jetSlope, 1, 1-(t-jetT2)*jetSlope
-		case t < jetT4:
-			r, g, b = 1, 1-(t-jetT3)*jetSlope, 0
+		case normalized < jetT1:
+			red, green, blue = 0, 0, jetBlueBase+normalized*jetSlope
+		case normalized < jetT2:
+			red, green, blue = 0, (normalized-jetT1)*jetSlope, 1
+		case normalized < jetT3:
+			red, green, blue = (normalized-jetT2)*jetSlope, 1, 1-(normalized-jetT2)*jetSlope
+		case normalized < jetT4:
+			red, green, blue = 1, 1-(normalized-jetT3)*jetSlope, 0
 		default:
-			r, g, b = 1-(t-jetT4)*jetSlope, 0, 0
+			red, green, blue = 1-(normalized-jetT4)*jetSlope, 0, 0
 		}
-		JetLUT[i] = [3]uint8{
-			uint8(clampF(r, 0, 1) * lutMaxFloat),
-			uint8(clampF(g, 0, 1) * lutMaxFloat),
-			uint8(clampF(b, 0, 1) * lutMaxFloat),
+		JetLUT[lutIdx] = [3]uint8{
+			uint8(clampF(red) * lutMaxFloat),
+			uint8(clampF(green) * lutMaxFloat),
+			uint8(clampF(blue) * lutMaxFloat),
 		}
 	}
 
-	for i := range 256 {
-		GrayscaleLUT[i] = [3]uint8{uint8(i), uint8(i), uint8(i)}
+	for lutIdx := range 256 {
+		GrayscaleLUT[lutIdx] = [3]uint8{uint8(lutIdx), uint8(lutIdx), uint8(lutIdx)}
 	}
 }
 
-func clampF(v, lo, hi float64) float64 {
-	if v < lo {
-		return lo
+func clampF(val float64) float64 {
+	if val < 0 {
+		return 0
 	}
-	if v > hi {
-		return hi
+	if val > 1 {
+		return 1
 	}
 
-	return v
+	return val
 }
