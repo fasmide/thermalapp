@@ -93,14 +93,14 @@ func (p *Player) buildIndex() error {
 
 	for {
 		if _, err := p.file.Seek(pos, 0); err != nil {
-			return err
+			return fmt.Errorf("build index seek: %w", err)
 		}
 		_, err := io.ReadFull(p.file, szBuf[:])
 		if err == io.EOF || err == io.ErrUnexpectedEOF {
 			break
 		}
 		if err != nil {
-			return err
+			return fmt.Errorf("build index read: %w", err)
 		}
 		cSize := binary.LittleEndian.Uint32(szBuf[:])
 		offsets = append(offsets, pos)
@@ -114,7 +114,7 @@ func (p *Player) buildIndex() error {
 	}
 
 	if _, err := p.file.Seek(headerSize, 0); err != nil {
-		return err
+		return fmt.Errorf("build index rewind: %w", err)
 	}
 
 	return nil

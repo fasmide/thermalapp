@@ -122,10 +122,10 @@ func (r *Recorder) WriteFrame(frame *camera.Frame) error {
 	var szBuf [frameSizePrefixLen]byte
 	binary.LittleEndian.PutUint32(szBuf[:], uint32(r.compBuf.Len()))
 	if _, err := r.file.Write(szBuf[:]); err != nil {
-		return err
+		return fmt.Errorf("write frame size: %w", err)
 	}
 	if _, err := r.file.Write(r.compBuf.Bytes()); err != nil {
-		return err
+		return fmt.Errorf("write frame data: %w", err)
 	}
 
 	r.bytesWritten += int64(frameSizePrefixLen) + int64(r.compBuf.Len())
@@ -157,7 +157,11 @@ func (r *Recorder) Close() error {
 	r.file = nil
 	log.Printf("recording closed: %d frames", r.frames)
 
-	return err
+	if err != nil {
+		return fmt.Errorf("close recording: %w", err)
+	}
+
+	return nil
 }
 
 // Frames returns the number of frames written so far.

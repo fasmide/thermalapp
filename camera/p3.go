@@ -358,15 +358,18 @@ func (c *P3Camera) sendCommand(cmd []byte) error {
 		0, 0,
 		cmd,
 	)
+	if err != nil {
+		return fmt.Errorf("sendCommand: %w", err)
+	}
 
-	return err
+	return nil
 }
 
 func (c *P3Camera) readResponse(length int) ([]byte, error) {
 	buf := make([]byte, length)
 	n, err := c.dev.Control(0xC1, 0x21, 0, 0, buf)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("readResponse: %w", err)
 	}
 
 	return buf[:n], nil
@@ -375,8 +378,11 @@ func (c *P3Camera) readResponse(length int) ([]byte, error) {
 func (c *P3Camera) readStatus() (byte, error) {
 	buf := make([]byte, 1)
 	_, err := c.dev.Control(0xC1, 0x22, 0, 0, buf)
+	if err != nil {
+		return buf[0], fmt.Errorf("readStatus: %w", err)
+	}
 
-	return buf[0], err
+	return buf[0], nil
 }
 
 func (c *P3Camera) readRegister(cmdName string, length int) ([]byte, error) {

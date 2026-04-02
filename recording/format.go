@@ -68,8 +68,11 @@ func writeHeader(w io.Writer, h Header) error {
 	binary.LittleEndian.PutUint32(buf[14:18], h.FrameCount)
 	binary.LittleEndian.PutUint64(buf[18:26], uint64(h.StartTime))
 	_, err := w.Write(buf[:])
+	if err != nil {
+		return fmt.Errorf("write header: %w", err)
+	}
 
-	return err
+	return nil
 }
 
 func readHeader(r io.Reader) (Header, error) {
