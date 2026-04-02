@@ -33,6 +33,69 @@ import (
 	"thermalapp/recording"
 )
 
+const (
+	windowScaleFactor       = 3                      // pixel scale for initial window size
+	windowHeightPadDp       = 80                     // extra height padding for status bars in dp
+	spotCursorIdx           = 2                      // index of the cursor spot in spots slice
+	firstUserSpotIdx        = 3                      // index of the first user-placed spot
+	toastShortDuration      = 2 * time.Second        // duration for short toast notifications
+	toastDuration           = 3 * time.Second        // duration for standard toast notifications
+	backfillDebounce        = 150 * time.Millisecond // debounce delay before starting backfill
+	frameBytesPerPixel      = 4                      // bytes per pixel when sizing buffer panel
+	msPerFrameAt25FPS       = 40                     // milliseconds per frame at 25 fps
+	nucBadgeInsetDp         = 8                      // NUC badge inset from image edge in dp
+	colorbarHeightDp        = 20                     // colorbar height in dp
+	colorbarLabelXOffset    = 4                      // x offset for colorbar min label in px
+	colorbarMaxLabelInsetDp = 55                     // right inset for colorbar max label in dp
+	lumThreshold            = 128                    // luminance threshold for contrast text color
+	playbackBarHeightDp     = 28                     // playback bar height in dp
+	frameCounterInsetDp     = 6                      // left inset for frame counter label in dp
+	sliderHeightDp          = 12                     // slider height in dp
+	sliderTrackHeightDp     = 4                      // slider track height in dp
+	sliderThumbWidthDp      = 8                      // slider thumb width in dp
+	degreesPerRotStep       = 90                     // degrees per rotation step
+	spotHitRadiusSq         = 25                     // squared hit radius for spot selection in px
+	keyHelpColumnWidthDp    = 100                    // key column width in help overlay in dp
+	keyHelpPanelOffsetDp    = 20                     // help overlay offset from top-left in dp
+	keyHelpTitleBottomDp    = 6                      // bottom inset below help title in dp
+	keyHelpSectionTopDp     = 10                     // top padding for help sections in dp
+	keyHelpExtraWidthDp     = 220                    // extra width for help overlay beyond key col in dp
+	keyHelpPanelInsetDp     = 12                     // uniform inset inside help overlay in dp
+	toastPaddingDp          = 10                     // padding inside toast notification in dp
+	toastBottomOffsetDp     = 80                     // offset from bottom of window for toast in dp
+
+	rotationCount      = 4  // total number of rotation steps (0°, 90°, 180°, 270°)
+	selectionRingExtra = 3  // extra pixels for the selection highlight ring around a spot
+	cursorLabelXOff    = 12 // cursor temp label x offset from cursor position in px
+	cursorLabelYOff    = 6  // cursor temp label y offset above cursor position in px
+
+	// Inset sizes (dp) used for labels and bars.
+	labelInsetSmDp   = 1 // top/bottom inset for spot/temp labels
+	labelInsetMdDp   = 3 // left/right inset for spot/temp labels; NUC badge top/bottom
+	labelInsetLgDp   = 6 // left/right inset for NUC badge
+	playbarInsetDp   = 2 // uniform inset for the playback bar content
+	statusBarInsetDp = 4 // uniform inset for the status bar content
+	playBtnInsetXDp  = 8 // left/right padding inside the play/pause button
+	playBtnInsetYDp  = 2 // top/bottom padding inside the play/pause button
+	frameCounterRDp  = 4 // right inset for frame counter label
+	sectionTopPad0Dp = 2 // top padding for the first help section (no gap)
+	sectionBotPadDp  = 2 // bottom padding for help section title rows
+
+	// Playback navigation step for "go back one frame" (FrameIndex returns next frame, so -2 steps back).
+	seekBackStep = 2
+
+	// centerDiv is the divisor used when centering the image within the available area.
+	centerDiv = 2
+
+	// markerDiameterMult multiplies markerSize to get the full diameter of a spot marker.
+	markerDiameterMult = 2
+
+	// Rec.601 luminance weights for perceived brightness calculation.
+	lumWeightR = 0.299 // red channel luminance weight
+	lumWeightG = 0.587 // green channel luminance weight
+	lumWeightB = 0.114 // blue channel luminance weight
+)
+
 // App holds the UI and shared state.
 type App struct {
 	Window *app.Window
@@ -120,7 +183,7 @@ func NewApp(cam camera.Camera, bufSize int64) *App {
 	title := "P3 Thermal"
 	w.Option(
 		app.Title(title),
-		app.Size(unit.Dp(float32(size.X*3)), unit.Dp(float32(size.Y*3+80))),
+		app.Size(unit.Dp(float32(size.X*windowScaleFactor)), unit.Dp(float32(size.Y*windowScaleFactor+windowHeightPadDp))),
 	)
 
 	return &App{
@@ -135,7 +198,7 @@ func NewApp(cam camera.Camera, bufSize int64) *App {
 		spots: []*Spot{
 			NewSpot(0, SpotMin, color.NRGBA{R: 60, G: 120, B: 255, A: 230}),
 			NewSpot(1, SpotMax, color.NRGBA{R: 255, G: 60, B: 60, A: 230}),
-			NewSpot(2, SpotCursor, color.NRGBA{R: 180, G: 180, B: 180, A: 200}),
+			NewSpot(spotCursorIdx, SpotCursor, color.NRGBA{R: 180, G: 180, B: 180, A: 200}),
 		},
 		graphs:       make(map[int]*GraphWindow),
 		frameBuf:     NewFrameBuffer(size.X, size.Y, bufSize),
@@ -232,7 +295,7 @@ func (a *App) UpdateFrame(frame *camera.Frame) {
 	a.smInited.Store(true)
 
 	// Spot 2: cursor — recorded in handlePointer, just read temp here if active
-	cursorSpot := a.spots[2]
+	cursorSpot := a.spots[spotCursorIdx]
 	cs := cursorSpot.GetState()
 	if cs.Active {
 		cIdx := int(cs.Y)*imgW + int(cs.X)
@@ -243,8 +306,8 @@ func (a *App) UpdateFrame(frame *camera.Frame) {
 
 	// User spots (3+)
 	a.mu.Lock()
-	userSpots := make([]*Spot, len(a.spots[3:]))
-	copy(userSpots, a.spots[3:])
+	userSpots := make([]*Spot, len(a.spots[firstUserSpotIdx:]))
+	copy(userSpots, a.spots[firstUserSpotIdx:])
 	a.mu.Unlock()
 	for _, sp := range userSpots {
 		st := sp.GetState()
@@ -296,7 +359,7 @@ func (a *App) refreshDisplay() {
 		if idx < 0 || idx >= len(result.Celsius) {
 			continue
 		}
-		if i >= 3 {
+		if i >= firstUserSpotIdx {
 			temp := sp.CorrectedTemp(result.Celsius[idx], result.GlobalEmissivity, result.AmbientC)
 			sp.SetLastTemp(temp)
 		} else {
@@ -371,13 +434,14 @@ func (a *App) handleKeys(gtx layout.Context) {
 
 		switch ke.Name {
 		case "Q", key.NameEscape:
-			if ke.Name == key.NameEscape && a.epsDropdown.IsOpen() {
+			switch {
+			case ke.Name == key.NameEscape && a.epsDropdown.IsOpen():
 				a.epsDropdown.Close()
-			} else if ke.Name == key.NameEscape && a.bufPanel.IsOpen() {
+			case ke.Name == key.NameEscape && a.bufPanel.IsOpen():
 				a.bufPanel.Close()
-			} else if ke.Name == key.NameEscape && a.selectedSpot >= 0 {
+			case ke.Name == key.NameEscape && a.selectedSpot >= 0:
 				a.selectedSpot = -1
-			} else {
+			default:
 				a.Window.Perform(system.ActionClose)
 			}
 
@@ -428,7 +492,7 @@ func (a *App) handleKeys(gtx layout.Context) {
 			a.showHelp = !a.showHelp
 
 		case "R":
-			a.rotation = (a.rotation + 1) % 4
+			a.rotation = (a.rotation + 1) % rotationCount
 			a.refreshDisplay()
 
 		case "T":
@@ -470,7 +534,7 @@ func (a *App) handleKeys(gtx layout.Context) {
 				a.params.Emissivity = preset.Emissivity
 				a.toastMsg = fmt.Sprintf("ε = %.2f  %s", preset.Emissivity, preset.Name)
 			}
-			a.toastExpiry = time.Now().Add(2 * time.Second)
+			a.toastExpiry = time.Now().Add(toastShortDuration)
 			a.mu.Unlock()
 			a.refreshDisplay()
 
@@ -478,14 +542,14 @@ func (a *App) handleKeys(gtx layout.Context) {
 			a.mu.Lock()
 			// Close any graph windows for user spots (index >= 3)
 			for idx, gw := range a.graphs {
-				if idx >= 3 {
+				if idx >= firstUserSpotIdx {
 					gw.mu.Lock()
 					gw.window.Perform(system.ActionClose)
 					gw.mu.Unlock()
 					delete(a.graphs, idx)
 				}
 			}
-			a.spots = a.spots[:3] // keep min, max, cursor
+			a.spots = a.spots[:firstUserSpotIdx] // keep min, max, cursor
 			a.selectedSpot = -1
 			a.mu.Unlock()
 
@@ -514,13 +578,13 @@ func (a *App) handleKeys(gtx layout.Context) {
 				} else {
 					a.toastMsg = "Playback resumed"
 				}
-				a.toastExpiry = time.Now().Add(2 * time.Second)
+				a.toastExpiry = time.Now().Add(toastShortDuration)
 				a.mu.Unlock()
 			}
 
 		case key.NameLeftArrow:
 			if a.player != nil {
-				idx := a.player.FrameIndex() - 2
+				idx := a.player.FrameIndex() - seekBackStep
 				if idx < 0 {
 					idx = 0
 				}
@@ -543,7 +607,7 @@ func (a *App) handleKeys(gtx layout.Context) {
 				} else {
 					a.toastMsg = "Playback resumed"
 				}
-				a.toastExpiry = time.Now().Add(2 * time.Second)
+				a.toastExpiry = time.Now().Add(toastShortDuration)
 				a.mu.Unlock()
 			}
 
@@ -588,7 +652,7 @@ func (a *App) handlePointer(gtx layout.Context) {
 			r := a.result
 			a.mu.Unlock()
 
-			cursorSpot := a.spots[2]
+			cursorSpot := a.spots[spotCursorIdx]
 			if r != nil && imgX >= 0 && imgY >= 0 && imgX < r.RGBA.Bounds().Dx() && imgY < r.RGBA.Bounds().Dy() {
 				cursorSpot.SetPosition(float32(imgX), float32(imgY), true)
 				// Update cursor temperature immediately so the label reflects the current pixel
@@ -621,11 +685,11 @@ func (a *App) handlePointer(gtx layout.Context) {
 				if pe.Modifiers.Contain(key.ModShift) {
 					a.mu.Lock()
 					found := -1
-					for i := 3; i < len(a.spots); i++ {
+					for i := firstUserSpotIdx; i < len(a.spots); i++ {
 						spX, spY := a.spots[i].GetPosition()
 						dx := int(spX) - imgX
 						dy := int(spY) - imgY
-						if dx*dx+dy*dy < 25 {
+						if dx*dx+dy*dy < spotHitRadiusSq {
 							found = i
 
 							break
@@ -643,11 +707,11 @@ func (a *App) handlePointer(gtx layout.Context) {
 					// Normal click: add or remove a user measurement point
 					removed := false
 					a.mu.Lock()
-					for i := 3; i < len(a.spots); i++ {
+					for i := firstUserSpotIdx; i < len(a.spots); i++ {
 						spX, spY := a.spots[i].GetPosition()
 						dx := int(spX) - imgX
 						dy := int(spY) - imgY
-						if dx*dx+dy*dy < 25 {
+						if dx*dx+dy*dy < spotHitRadiusSq {
 							// Deselect if this was the selected spot
 							if a.selectedSpot == i {
 								a.selectedSpot = -1
@@ -665,11 +729,11 @@ func (a *App) handlePointer(gtx layout.Context) {
 							// Re-number remaining user spots and fix graph map keys
 							newGraphs := make(map[int]*GraphWindow)
 							for k, v := range a.graphs {
-								if k < 3 {
+								if k < firstUserSpotIdx {
 									newGraphs[k] = v
 								}
 							}
-							for j := 3; j < len(a.spots); j++ {
+							for j := firstUserSpotIdx; j < len(a.spots); j++ {
 								a.spots[j].Index = j
 								if gw, ok := a.graphs[j+1]; ok {
 									newGraphs[j] = gw
@@ -692,7 +756,7 @@ func (a *App) handlePointer(gtx layout.Context) {
 			}
 
 		case pointer.Leave:
-			a.spots[2].SetActive(false)
+			a.spots[spotCursorIdx].SetActive(false)
 		}
 	}
 }
@@ -750,7 +814,7 @@ func (a *App) doLayout(gtx layout.Context) layout.Dimensions {
 			preset := colorize.EmissivityPresets[sel]
 			a.params.Emissivity = preset.Emissivity
 			a.toastMsg = fmt.Sprintf("ε = %.2f  %s", preset.Emissivity, preset.Name)
-			a.toastExpiry = time.Now().Add(2 * time.Second)
+			a.toastExpiry = time.Now().Add(toastShortDuration)
 			a.mu.Unlock()
 			a.refreshDisplay()
 		}
@@ -761,7 +825,7 @@ func (a *App) doLayout(gtx layout.Context) layout.Dimensions {
 		curBytes := a.frameBuf.MaxBytes()
 		curInterval := a.frameBuf.SampleInterval()
 		w, h := a.frameBuf.Dims()
-		res := a.bufPanel.Layout(gtx, a.theme, curBytes, curInterval, 4, w*h)
+		res := a.bufPanel.Layout(gtx, a.theme, curBytes, curInterval, frameBytesPerPixel, w*h)
 		if res.SizeChanged {
 			a.frameBuf.SetMaxBytes(res.NewBytes)
 			if a.playBuf != nil {
@@ -776,7 +840,7 @@ func (a *App) doLayout(gtx layout.Context) layout.Dimensions {
 			}
 			a.mu.Lock()
 			a.toastMsg = fmt.Sprintf("Buffer resized to %s", humanSize(res.NewBytes))
-			a.toastExpiry = time.Now().Add(2 * time.Second)
+			a.toastExpiry = time.Now().Add(toastShortDuration)
 			a.mu.Unlock()
 		}
 		if res.IntervalChanged {
@@ -785,7 +849,7 @@ func (a *App) doLayout(gtx layout.Context) layout.Dimensions {
 				// Convert interval to frame skip (recording is ~25fps)
 				skip := 1
 				if res.NewInterval > 0 {
-					skip = int(res.NewInterval.Milliseconds() / 40) // 40ms per frame at 25fps
+					skip = int(res.NewInterval.Milliseconds() / msPerFrameAt25FPS)
 					if skip < 1 {
 						skip = 1
 					}
@@ -810,7 +874,7 @@ func (a *App) doLayout(gtx layout.Context) layout.Dimensions {
 			}
 			a.mu.Lock()
 			a.toastMsg = fmt.Sprintf("Sample rate: %s", label)
-			a.toastExpiry = time.Now().Add(2 * time.Second)
+			a.toastExpiry = time.Now().Add(toastShortDuration)
 			a.mu.Unlock()
 		}
 	}
@@ -851,8 +915,8 @@ func (a *App) layoutImage(gtx layout.Context, result *colorize.Result) layout.Di
 	scaledW := int(math.Floor(float64(imgW * scale)))
 	scaledH := int(math.Floor(float64(imgH * scale)))
 
-	offsetX := (int(availW) - scaledW) / 2
-	offsetY := (int(availH) - scaledH) / 2
+	offsetX := (int(availW) - scaledW) / centerDiv
+	offsetY := (int(availH) - scaledH) / centerDiv
 
 	// Store layout info for cursor mapping
 	a.imgOffsetX = offsetX
@@ -913,7 +977,7 @@ func (a *App) layoutImage(gtx layout.Context, result *colorize.Result) layout.Di
 
 		// Selection highlight: larger yellow ring
 		if sn.sp.Index == selIdx {
-			ringSize := markerSize + 3
+			ringSize := markerSize + selectionRingExtra
 			s := clip.Rect{Min: image.Pt(cx-ringSize, cy-ringSize), Max: image.Pt(cx+ringSize, cy+ringSize)}.Push(gtx.Ops)
 			paint.Fill(gtx.Ops, color.NRGBA{R: 255, G: 220, B: 0, A: 255})
 			s.Pop()
@@ -921,7 +985,7 @@ func (a *App) layoutImage(gtx layout.Context, result *colorize.Result) layout.Di
 
 		mx := cx - markerSize
 		my := cy - markerSize
-		sz := markerSize * 2
+		sz := markerSize * markerDiameterMult
 		s := clip.Rect{Min: image.Pt(mx, my), Max: image.Pt(mx+sz, my+sz)}.Push(gtx.Ops)
 		paint.Fill(gtx.Ops, sn.sp.Color)
 		s.Pop()
@@ -949,11 +1013,11 @@ func (a *App) layoutImage(gtx layout.Context, result *colorize.Result) layout.Di
 	}
 
 	// Cursor temperature label (next to mouse pointer)
-	cursorSpot := a.spots[2]
-	cursorState := snaps[2].state
+	cursorSpot := a.spots[spotCursorIdx]
+	cursorState := snaps[spotCursorIdx].state
 	if cursorState.Active {
-		cx := int(a.cursorPos.X) + 12
-		cy := int(a.cursorPos.Y) - 6
+		cx := int(a.cursorPos.X) + cursorLabelXOff
+		cy := int(a.cursorPos.Y) - cursorLabelYOff
 		a.drawTempLabel(gtx, cx, cy, cursorSpot.LastTemp(), cursorSpot.Color)
 	}
 
@@ -975,7 +1039,10 @@ func (a *App) drawSpotLabel(gtx layout.Context, sx, sy int, index int, temp floa
 	// Measure
 	macro := op.Record(gtx.Ops)
 	gtx.Constraints.Min = image.Point{}
-	dims := layout.Inset{Left: unit.Dp(3), Right: unit.Dp(3), Top: unit.Dp(1), Bottom: unit.Dp(1)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+	dims := layout.Inset{
+		Left: unit.Dp(labelInsetMdDp), Right: unit.Dp(labelInsetMdDp),
+		Top: unit.Dp(labelInsetSmDp), Bottom: unit.Dp(labelInsetSmDp),
+	}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 		lbl := material.Caption(a.theme, txt)
 		lbl.Color = color.NRGBA{R: 255, G: 255, B: 255, A: 255}
 
@@ -1030,7 +1097,10 @@ func (a *App) drawTempLabel(gtx layout.Context, sx, sy int, temp float32, col co
 	// Measure
 	macro := op.Record(gtx.Ops)
 	gtx.Constraints.Min = image.Point{}
-	dims := layout.Inset{Left: unit.Dp(3), Right: unit.Dp(3), Top: unit.Dp(1), Bottom: unit.Dp(1)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+	dims := layout.Inset{
+		Left: unit.Dp(labelInsetMdDp), Right: unit.Dp(labelInsetMdDp),
+		Top: unit.Dp(labelInsetSmDp), Bottom: unit.Dp(labelInsetSmDp),
+	}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 		lbl := material.Caption(a.theme, txt)
 		lbl.Color = color.NRGBA{R: 255, G: 255, B: 255, A: 255}
 
@@ -1056,7 +1126,10 @@ func (a *App) drawTempLabel(gtx layout.Context, sx, sy int, temp float32, col co
 func (a *App) drawNUCIndicator(gtx layout.Context, rightX, topY int) {
 	macro := op.Record(gtx.Ops)
 	gtx.Constraints.Min = image.Point{}
-	dims := layout.Inset{Left: unit.Dp(6), Right: unit.Dp(6), Top: unit.Dp(3), Bottom: unit.Dp(3)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+	dims := layout.Inset{
+		Left: unit.Dp(labelInsetLgDp), Right: unit.Dp(labelInsetLgDp),
+		Top: unit.Dp(labelInsetMdDp), Bottom: unit.Dp(labelInsetMdDp),
+	}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 		lbl := material.Body1(a.theme, "NUC")
 		lbl.Color = color.NRGBA{R: 255, G: 255, B: 255, A: 255}
 		lbl.Font.Weight = font.Bold
@@ -1065,8 +1138,8 @@ func (a *App) drawNUCIndicator(gtx layout.Context, rightX, topY int) {
 	})
 	call := macro.Stop()
 
-	ox := rightX - dims.Size.X - gtx.Dp(unit.Dp(8))
-	oy := topY + gtx.Dp(unit.Dp(8))
+	ox := rightX - dims.Size.X - gtx.Dp(unit.Dp(nucBadgeInsetDp))
+	oy := topY + gtx.Dp(unit.Dp(nucBadgeInsetDp))
 	s := op.Offset(image.Pt(ox, oy)).Push(gtx.Ops)
 
 	bg := clip.Rect{Max: dims.Size}.Push(gtx.Ops)
@@ -1078,7 +1151,7 @@ func (a *App) drawNUCIndicator(gtx layout.Context, rightX, topY int) {
 }
 
 func (a *App) layoutColorbar(gtx layout.Context, result *colorize.Result) layout.Dimensions {
-	barH := gtx.Dp(unit.Dp(20))
+	barH := gtx.Dp(unit.Dp(colorbarHeightDp))
 	barImg := colorize.MakeColorbar(a.params.Palette, barH)
 
 	// Scale colorbar to full width
@@ -1107,16 +1180,17 @@ func (a *App) layoutColorbar(gtx layout.Context, result *colorize.Result) layout
 	maxBg := lut[255]
 	contrastColor := func(bg [3]uint8) color.NRGBA {
 		// Perceived luminance
-		lum := 0.299*float32(bg[0]) + 0.587*float32(bg[1]) + 0.114*float32(bg[2])
-		if lum > 128 {
+		lum := lumWeightR*float32(bg[0]) + lumWeightG*float32(bg[1]) + lumWeightB*float32(bg[2])
+		if lum > lumThreshold {
 			return color.NRGBA{A: 255} // black
 		}
+
 		return color.NRGBA{R: 255, G: 255, B: 255, A: 255} // white
 	}
 
 	// Min label (left)
 	{
-		s := op.Offset(image.Pt(4, 1)).Push(gtx.Ops)
+		s := op.Offset(image.Pt(colorbarLabelXOffset, 1)).Push(gtx.Ops)
 		lbl := material.Caption(a.theme, fmt.Sprintf("%.1f\u00b0C", result.MinC))
 		lbl.Color = contrastColor(minBg)
 		lbl.Layout(gtx)
@@ -1126,7 +1200,7 @@ func (a *App) layoutColorbar(gtx layout.Context, result *colorize.Result) layout
 	// Max label (right)
 	{
 		maxStr := fmt.Sprintf("%.1f\u00b0C", result.MaxC)
-		s := op.Offset(image.Pt(barW-gtx.Dp(unit.Dp(55)), 1)).Push(gtx.Ops)
+		s := op.Offset(image.Pt(barW-gtx.Dp(unit.Dp(colorbarMaxLabelInsetDp)), 1)).Push(gtx.Ops)
 		lbl := material.Caption(a.theme, maxStr)
 		lbl.Color = contrastColor(maxBg)
 		lbl.Layout(gtx)
@@ -1152,7 +1226,7 @@ func (a *App) layoutPlaybackBar(gtx layout.Context) layout.Dimensions {
 	}
 	paused := player.IsPaused()
 
-	barH := gtx.Dp(unit.Dp(28))
+	barH := gtx.Dp(unit.Dp(playbackBarHeightDp))
 	lightGray := color.NRGBA{R: 220, G: 220, B: 220, A: 255}
 	bgColor := color.NRGBA{R: 35, G: 35, B: 35, A: 255}
 
@@ -1164,7 +1238,7 @@ func (a *App) layoutPlaybackBar(gtx layout.Context) layout.Dimensions {
 			return layout.Dimensions{Size: gtx.Constraints.Min}
 		},
 		func(gtx layout.Context) layout.Dimensions {
-			return layout.UniformInset(unit.Dp(2)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+			return layout.UniformInset(unit.Dp(playbarInsetDp)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 				return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
 					// Play/Pause button
 					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
@@ -1186,7 +1260,10 @@ func (a *App) layoutPlaybackBar(gtx layout.Context) layout.Dimensions {
 									return layout.Dimensions{Size: gtx.Constraints.Min}
 								},
 								func(gtx layout.Context) layout.Dimensions {
-									return layout.Inset{Left: unit.Dp(8), Right: unit.Dp(8), Top: unit.Dp(2), Bottom: unit.Dp(2)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+									return layout.Inset{
+										Left: unit.Dp(playBtnInsetXDp), Right: unit.Dp(playBtnInsetXDp),
+										Top: unit.Dp(playBtnInsetYDp), Bottom: unit.Dp(playBtnInsetYDp),
+									}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 										txt := "PLAY"
 										if !paused {
 											txt = "PAUS"
@@ -1207,7 +1284,12 @@ func (a *App) layoutPlaybackBar(gtx layout.Context) layout.Dimensions {
 					}),
 					// Frame counter + absolute time (right side, Rigid)
 					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						return layout.Inset{Left: unit.Dp(6), Right: unit.Dp(4)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+						inset := layout.Inset{
+							Left:  unit.Dp(frameCounterInsetDp),
+							Right: unit.Dp(frameCounterRDp),
+						}
+
+						return inset.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 							ft := player.FrameTime()
 							txt := fmt.Sprintf("%d/%d  %s", current, total, ft.Format("2006-01-02 15:04:05"))
 							lbl := material.Body2(a.theme, txt)
@@ -1223,8 +1305,8 @@ func (a *App) layoutPlaybackBar(gtx layout.Context) layout.Dimensions {
 }
 
 func (a *App) layoutSlider(gtx layout.Context, current, total, _ int) layout.Dimensions {
-	sliderH := gtx.Dp(unit.Dp(12))
-	trackH := gtx.Dp(unit.Dp(4))
+	sliderH := gtx.Dp(unit.Dp(sliderHeightDp))
+	trackH := gtx.Dp(unit.Dp(sliderTrackHeightDp))
 	w := gtx.Constraints.Max.X
 	if w < 1 {
 		w = 1
@@ -1297,7 +1379,7 @@ func (a *App) layoutSlider(gtx layout.Context, current, total, _ int) layout.Dim
 	}
 
 	// Draw thumb
-	thumbW := gtx.Dp(unit.Dp(8))
+	thumbW := gtx.Dp(unit.Dp(sliderThumbWidthDp))
 	thumbX := filledW - thumbW/2
 	if thumbX < 0 {
 		thumbX = 0
@@ -1357,7 +1439,7 @@ func (a *App) seekToFrame(idx int) {
 	// Debounce backfill: wait 150ms after last seek before starting.
 	// This avoids spawning workers on every slider drag pixel.
 	if a.playBuf != nil {
-		a.backfillTimer = time.AfterFunc(150*time.Millisecond, func() {
+		a.backfillTimer = time.AfterFunc(backfillDebounce, func() {
 			a.mu.Lock()
 			params := a.params
 			rot := a.rotation
@@ -1414,7 +1496,7 @@ func (a *App) layoutStatus(gtx layout.Context, _ *colorize.Result) layout.Dimens
 
 	leftStatus := fmt.Sprintf("[C] %-10s  |  [A] %-10s  |  [G] Gain: %-4s  |",
 		p.Palette, agcName(p.Mode), gainStr)
-	rightStatus := fmt.Sprintf("|  [R] %d\u00b0  |  [H] Help%s", a.rotation*90, recStr)
+	rightStatus := fmt.Sprintf("|  [R] %d\u00b0  |  [H] Help%s", a.rotation*degreesPerRotStep, recStr)
 
 	lightGray := color.NRGBA{R: 220, G: 220, B: 220, A: 255}
 
@@ -1431,7 +1513,7 @@ func (a *App) layoutStatus(gtx layout.Context, _ *colorize.Result) layout.Dimens
 			return layout.Dimensions{Size: gtx.Constraints.Min}
 		},
 		func(gtx layout.Context) layout.Dimensions {
-			return layout.UniformInset(unit.Dp(4)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+			return layout.UniformInset(unit.Dp(statusBarInsetDp)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 				return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle, Spacing: layout.SpaceStart}.Layout(gtx,
 					layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
 						return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle, Spacing: layout.SpaceSides}.Layout(gtx,
@@ -1512,10 +1594,10 @@ func (a *App) layoutHelp(gtx layout.Context) {
 
 	lightGray := color.NRGBA{R: 220, G: 220, B: 220, A: 255}
 	dimGray := color.NRGBA{R: 160, G: 160, B: 160, A: 255}
-	keyW := gtx.Dp(unit.Dp(100))
+	keyW := gtx.Dp(unit.Dp(keyHelpColumnWidthDp))
 
 	// Semi-transparent background
-	defer op.Offset(image.Pt(20, 20)).Push(gtx.Ops).Pop()
+	defer op.Offset(image.Pt(keyHelpPanelOffsetDp, keyHelpPanelOffsetDp)).Push(gtx.Ops).Pop()
 
 	// Title + categorized rows
 	children := []layout.FlexChild{
@@ -1523,24 +1605,27 @@ func (a *App) layoutHelp(gtx layout.Context) {
 			lbl := material.Body1(a.theme, "Keyboard Controls")
 			lbl.Color = lightGray
 			lbl.Font.Weight = font.Bold
-			return layout.Inset{Bottom: unit.Dp(6)}.Layout(gtx, lbl.Layout)
+
+			return layout.Inset{Bottom: unit.Dp(keyHelpTitleBottomDp)}.Layout(gtx, lbl.Layout)
 		}),
 	}
 
 	for i, sec := range sections {
 		isFirst := i == 0
 		children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			topPad := unit.Dp(10)
+			topPad := unit.Dp(keyHelpSectionTopDp)
 			if isFirst {
-				topPad = unit.Dp(2)
+				topPad = unit.Dp(sectionTopPad0Dp)
 			}
-			return layout.Inset{Top: topPad, Bottom: unit.Dp(2)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-				lbl := material.Body2(a.theme, sec.title)
-				lbl.Color = dimGray
-				lbl.Font.Weight = font.Bold
 
-				return lbl.Layout(gtx)
-			})
+			return layout.Inset{Top: topPad, Bottom: unit.Dp(sectionBotPadDp)}.
+				Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+					lbl := material.Body2(a.theme, sec.title)
+					lbl.Color = dimGray
+					lbl.Font.Weight = font.Bold
+
+					return lbl.Layout(gtx)
+				})
 		}))
 		for _, r := range sec.rows {
 			children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
@@ -1566,9 +1651,9 @@ func (a *App) layoutHelp(gtx layout.Context) {
 
 	// Measure content first, then draw background behind it
 	macro := op.Record(gtx.Ops)
-	gtx.Constraints.Max.X = keyW + gtx.Dp(unit.Dp(220))
+	gtx.Constraints.Max.X = keyW + gtx.Dp(unit.Dp(keyHelpExtraWidthDp))
 	gtx.Constraints.Min = image.Point{}
-	dims := layout.UniformInset(unit.Dp(12)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+	dims := layout.UniformInset(unit.Dp(keyHelpPanelInsetDp)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 		return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
 	})
 	call := macro.Stop()
@@ -1585,7 +1670,7 @@ func (a *App) layoutToast(gtx layout.Context, msg string) {
 	// Measure text to get natural size
 	macro := op.Record(gtx.Ops)
 	gtx.Constraints.Min = image.Point{}
-	dims := layout.UniformInset(unit.Dp(10)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+	dims := layout.UniformInset(unit.Dp(toastPaddingDp)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 		lbl := material.Body2(a.theme, msg)
 		lbl.Color = color.NRGBA{R: 220, G: 220, B: 220, A: 255}
 
@@ -1595,7 +1680,7 @@ func (a *App) layoutToast(gtx layout.Context, msg string) {
 
 	// Center horizontally, near bottom
 	x := (gtx.Constraints.Max.X - dims.Size.X) / 2
-	y := gtx.Constraints.Max.Y - gtx.Dp(unit.Dp(80))
+	y := gtx.Constraints.Max.Y - gtx.Dp(unit.Dp(toastBottomOffsetDp))
 	defer op.Offset(image.Pt(x, y)).Push(gtx.Ops).Pop()
 
 	defer clip.Rect{Max: dims.Size}.Push(gtx.Ops).Pop()
@@ -1655,7 +1740,7 @@ func (a *App) saveScreenshot(img *image.RGBA) {
 
 	a.mu.Lock()
 	a.toastMsg = fmt.Sprintf("Screenshot saved: %s", name)
-	a.toastExpiry = time.Now().Add(3 * time.Second)
+	a.toastExpiry = time.Now().Add(toastDuration)
 	a.mu.Unlock()
 	a.Window.Invalidate()
 }
@@ -1671,7 +1756,7 @@ func (a *App) dumpFrame(frame *camera.Frame) {
 
 	a.mu.Lock()
 	a.toastMsg = fmt.Sprintf("Frame dumped: %s", name)
-	a.toastExpiry = time.Now().Add(3 * time.Second)
+	a.toastExpiry = time.Now().Add(toastDuration)
 	a.mu.Unlock()
 	a.Window.Invalidate()
 }
@@ -1688,7 +1773,7 @@ func (a *App) toggleRecording() {
 		}
 		a.recorder = nil
 		a.toastMsg = fmt.Sprintf("Recording stopped (%d frames)", frames)
-		a.toastExpiry = time.Now().Add(3 * time.Second)
+		a.toastExpiry = time.Now().Add(toastDuration)
 
 		return
 	}
@@ -1700,12 +1785,12 @@ func (a *App) toggleRecording() {
 	if err != nil {
 		log.Printf("start recording: %v", err)
 		a.toastMsg = fmt.Sprintf("Recording failed: %v", err)
-		a.toastExpiry = time.Now().Add(3 * time.Second)
+		a.toastExpiry = time.Now().Add(toastDuration)
 
 		return
 	}
 	a.recorder = rec
 	a.toastMsg = fmt.Sprintf("Recording: %s", name)
-	a.toastExpiry = time.Now().Add(3 * time.Second)
+	a.toastExpiry = time.Now().Add(toastDuration)
 	log.Printf("recording started: %s", name)
 }

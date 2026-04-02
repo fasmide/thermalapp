@@ -30,37 +30,37 @@ type Recorder struct {
 
 // NewRecorder creates a new recording file. Call Close when done.
 func NewRecorder(filename string, sensorW, sensorH int) (*Recorder, error) {
-	f, err := os.Create(filename)
+	file, err := os.Create(filename)
 	if err != nil {
 		return nil, fmt.Errorf("create recording: %w", err)
 	}
 
 	now := time.Now()
-	h := Header{
+	hdr := Header{
 		Width:     uint16(sensorW),
 		Height:    uint16(sensorH),
 		StartTime: now.UnixNano(),
 	}
 
-	if err := writeHeader(f, h); err != nil {
-		f.Close()
+	if err := writeHeader(file, hdr); err != nil {
+		file.Close()
 		os.Remove(filename)
 
 		return nil, err
 	}
 
 	rec := &Recorder{
-		file:         f,
-		header:       h,
+		file:         file,
+		header:       hdr,
 		start:        now,
-		rawBuf:       make([]byte, h.framePayloadSize()),
+		rawBuf:       make([]byte, hdr.framePayloadSize()),
 		bytesWritten: headerSize,
 	}
 
 	// flate.BestSpeed (level 1) — fast enough for 25fps, still good compression
 	rec.deflater, err = flate.NewWriter(&rec.compBuf, flate.BestSpeed)
 	if err != nil {
-		f.Close()
+		file.Close()
 		os.Remove(filename)
 
 		return nil, fmt.Errorf("create deflater: %w", err)

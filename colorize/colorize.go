@@ -10,6 +10,14 @@ import (
 	"thermalapp/camera"
 )
 
+const (
+	percentileHighBound = 99  // upper percentile for AGCPercentile mode
+	maxLUTIndex         = 255 // highest valid index into a 256-entry LUT
+	lutSize             = 256 // number of entries in a color LUT
+	rot180Steps         = 2   // 180° rotation in 90° steps
+	rot270Steps         = 3   // 270° rotation in 90° steps
+)
+
 // AGCMode selects how the thermal data is normalized to 0-255.
 type AGCMode int
 
@@ -168,7 +176,7 @@ func Colorize(frame *camera.Frame, params Params) *Result {
 	var low, high float32
 	switch params.Mode {
 	case AGCPercentile:
-		low, high = percentileBounds(celsius, 1, 99)
+		low, high = percentileBounds(celsius, 1, percentileHighBound)
 	case AGCFixed:
 		low, high = params.FixedMin, params.FixedMax
 	}
@@ -187,7 +195,7 @@ func Colorize(frame *camera.Frame, params Params) *Result {
 			} else if norm > 1 {
 				norm = 1
 			}
-			lutIdx := uint8(norm * 255)
+			lutIdx := uint8(norm * maxLUTIndex)
 			c := lut[lutIdx]
 			result.RGBA.SetRGBA(x, y, color.RGBA{c[0], c[1], c[2], 255})
 		}
@@ -217,8 +225,8 @@ func percentileBounds(data []float32, pLow, pHigh float64) (float32, float32) {
 // MakeColorbar creates a 256×h RGBA image showing the current palette gradient.
 func MakeColorbar(p Palette, h int) *image.RGBA {
 	lut := p.LUT()
-	img := image.NewRGBA(image.Rect(0, 0, 256, h))
-	for x := range 256 {
+	img := image.NewRGBA(image.Rect(0, 0, lutSize, h))
+	for x := range lutSize {
 		c := lut[x]
 		for y := range h {
 			img.SetRGBA(x, y, color.RGBA{c[0], c[1], c[2], 255})
@@ -256,9 +264,9 @@ func (r *Result) Rotate(steps int) *Result {
 			switch steps {
 			case 1: // 90° CW
 				dx, dy = srcH-1-sy, sx
-			case 2: // 180°
+			case rot180Steps: // 180°
 				dx, dy = srcW-1-sx, srcH-1-sy
-			case 3: // 270° CW
+			case rot270Steps: // 270° CW
 				dx, dy = sy, srcW-1-sx
 			}
 			dst.SetRGBA(dx, dy, r.RGBA.RGBAAt(sx, sy))
@@ -275,9 +283,9 @@ func (r *Result) Rotate(steps int) *Result {
 		switch steps {
 		case 1:
 			return srcH - 1 - y
-		case 2:
+		case rot180Steps:
 			return srcW - 1 - x
-		case 3:
+		case rot270Steps:
 			return y
 		}
 
@@ -287,9 +295,9 @@ func (r *Result) Rotate(steps int) *Result {
 		switch steps {
 		case 1:
 			return x
-		case 2:
+		case rot180Steps:
 			return srcH - 1 - y
-		case 3:
+		case rot270Steps:
 			return srcW - 1 - x
 		}
 

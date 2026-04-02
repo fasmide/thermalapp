@@ -16,6 +16,15 @@ import (
 	"thermalapp/recording"
 )
 
+const (
+	memInfoMinFields   = 2    // minimum field count in a /proc/meminfo line
+	maxBackfillWorkers = 8    // maximum number of parallel backfill goroutines
+	float32ByteSize    = 4    // bytes per float32 pixel in the celsius frame buffer
+	frameBufOverhead   = 24   // fixed overhead bytes per stored frame (struct fields)
+	kbytesPerMB        = 1024 // kilobytes per megabyte (for /proc/meminfo conversion)
+	backfillChanMult   = 2    // channel buffer multiplier relative to worker count
+)
+
 // availableMemoryBytes returns the available system memory in bytes.
 // Falls back to 0 if detection fails.
 func availableMemoryBytes() int64 {
@@ -29,9 +38,9 @@ func availableMemoryBytes() int64 {
 		line := sc.Text()
 		if strings.HasPrefix(line, "MemAvailable:") {
 			fields := strings.Fields(line)
-			if len(fields) >= 2 {
+			if len(fields) >= memInfoMinFields {
 				if kb, err := strconv.ParseInt(fields[1], 10, 64); err == nil {
-					return kb * 1024
+					return kb * kbytesPerMB
 				}
 			}
 		}
@@ -80,7 +89,7 @@ func NewFrameBuffer(width, height int, maxBytes int64) *FrameBuffer {
 func (fb *FrameBuffer) computeMax(width, height int) {
 	fb.width = width
 	fb.height = height
-	frameBytes := int64(width*height)*4 + 24 // float32 per pixel + struct overhead
+	frameBytes := int64(width*height)*float32ByteSize + frameBufOverhead // float32 per pixel + struct overhead
 	fb.maxFrames = int(fb.maxBytes / frameBytes)
 	if fb.maxFrames < 1 {
 		fb.maxFrames = 1
@@ -239,7 +248,7 @@ type PlaybackBuffer struct {
 // NewPlaybackBuffer creates a playback buffer that caches up to maxBytes
 // worth of celsius frames.
 func NewPlaybackBuffer(width, height int, totalFrames int, maxBytes int64) *PlaybackBuffer {
-	frameBytes := int64(width*height)*4 + 64
+	frameBytes := int64(width*height)*float32ByteSize + frameOverheadBytes
 	maxEntries := int(maxBytes / frameBytes)
 	if maxEntries < 1 {
 		maxEntries = 1
@@ -399,7 +408,7 @@ func (pb *PlaybackBuffer) MaxLen() int {
 func (pb *PlaybackBuffer) SetMaxBytes(maxBytes int64) {
 	pb.mu.Lock()
 	defer pb.mu.Unlock()
-	frameBytes := int64(pb.width*pb.height)*4 + 64
+	frameBytes := int64(pb.width*pb.height)*float32ByteSize + frameOverheadBytes
 	pb.maxEntries = int(maxBytes / frameBytes)
 	if pb.maxEntries < 1 {
 		pb.maxEntries = 1
@@ -444,7 +453,9 @@ func (pb *PlaybackBuffer) StopBackfill() {
 // colorizing them, and caching the celsius data. It reads from upToIdx-1
 // down to 0, skipping frames already in the cache. The invalidate callback
 // is called periodically so graph windows can redraw with the new data.
-func (pb *PlaybackBuffer) StartBackfill(player *recording.Player, upToIdx int, params colorize.Params, rotation int, invalidate func()) {
+func (pb *PlaybackBuffer) StartBackfill(
+	player *recording.Player, upToIdx int, params colorize.Params, rotation int, invalidate func(),
+) {
 	pb.StopBackfill()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -485,10 +496,10 @@ func (pb *PlaybackBuffer) runBackfill(ctx context.Context, player *recording.Pla
 
 	// Feed work items through a channel to N parallel workers
 	workers := runtime.NumCPU()
-	if workers > 8 {
-		workers = 8
+	if workers > maxBackfillWorkers {
+		workers = maxBackfillWorkers
 	}
-	ch := make(chan int, workers*2)
+	ch := make(chan int, workers*backfillChanMult)
 	var loaded atomic.Int64
 	var wg sync.WaitGroup
 

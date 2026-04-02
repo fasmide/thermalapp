@@ -1,5 +1,20 @@
 package colorize
 
+const (
+	lutMaxFloat   = 255.0 // maximum value for LUT float conversion
+	ironRShift    = 0.1   // red channel offset for Iron colormap
+	ironGShift    = 0.6   // green channel offset for Iron colormap
+	ironBlueLow   = 0.33  // first threshold for Iron blue channel
+	ironBlueHigh  = 0.66  // second threshold for Iron blue channel
+	ironBlueSlope = 3.0   // slope of Iron blue ramp
+	jetT1         = 0.125 // Jet colormap breakpoint 1
+	jetT2         = 0.375 // Jet colormap breakpoint 2
+	jetT3         = 0.625 // Jet colormap breakpoint 3
+	jetT4         = 0.875 // Jet colormap breakpoint 4
+	jetSlope      = 4     // slope between Jet breakpoints
+	jetBlueBase   = 0.5   // blue channel starting value at t=0 for Jet
+)
+
 var InfernoLUT = [256][3]uint8{
 	{0, 0, 4}, {1, 0, 5}, {1, 1, 6}, {1, 1, 8},
 	{2, 1, 10}, {2, 2, 12}, {2, 2, 14}, {3, 2, 16},
@@ -75,40 +90,42 @@ var GrayscaleLUT [256][3]uint8
 
 func init() {
 	for i := range 256 {
-		t := float64(i) / 255.0
+		t := float64(i) / lutMaxFloat
 
 		// Iron/Hot colormap
-		r := clampF(1.5*t-0.1, 0, 1)
-		g := clampF(1.5*t-0.6, 0, 1)
+		r := clampF(1.5*t-ironRShift, 0, 1)
+		g := clampF(1.5*t-ironGShift, 0, 1)
 		var b float64
-		if t < 0.33 {
-			b = clampF(3.0*t, 0, 1)
-		} else if t < 0.66 {
-			b = clampF(1.0-3.0*(t-0.33), 0, 1)
-		} else {
+		switch {
+		case t < ironBlueLow:
+			b = clampF(ironBlueSlope*t, 0, 1)
+		case t < ironBlueHigh:
+			b = clampF(1.0-ironBlueSlope*(t-ironBlueLow), 0, 1)
+		default:
 			b = 0
 		}
-		IronLUT[i] = [3]uint8{uint8(r * 255), uint8(g * 255), uint8(b * 255)}
+		IronLUT[i] = [3]uint8{uint8(r * lutMaxFloat), uint8(g * lutMaxFloat), uint8(b * lutMaxFloat)}
 	}
 
 	for i := range 256 {
-		t := float64(i) / 255.0
+		t := float64(i) / lutMaxFloat
 		var r, g, b float64
-		if t < 0.125 {
-			r, g, b = 0, 0, 0.5+t*4
-		} else if t < 0.375 {
-			r, g, b = 0, (t-0.125)*4, 1
-		} else if t < 0.625 {
-			r, g, b = (t-0.375)*4, 1, 1-(t-0.375)*4
-		} else if t < 0.875 {
-			r, g, b = 1, 1-(t-0.625)*4, 0
-		} else {
-			r, g, b = 1-(t-0.875)*4, 0, 0
+		switch {
+		case t < jetT1:
+			r, g, b = 0, 0, jetBlueBase+t*jetSlope
+		case t < jetT2:
+			r, g, b = 0, (t-jetT1)*jetSlope, 1
+		case t < jetT3:
+			r, g, b = (t-jetT2)*jetSlope, 1, 1-(t-jetT2)*jetSlope
+		case t < jetT4:
+			r, g, b = 1, 1-(t-jetT3)*jetSlope, 0
+		default:
+			r, g, b = 1-(t-jetT4)*jetSlope, 0, 0
 		}
 		JetLUT[i] = [3]uint8{
-			uint8(clampF(r, 0, 1) * 255),
-			uint8(clampF(g, 0, 1) * 255),
-			uint8(clampF(b, 0, 1) * 255),
+			uint8(clampF(r, 0, 1) * lutMaxFloat),
+			uint8(clampF(g, 0, 1) * lutMaxFloat),
+			uint8(clampF(b, 0, 1) * lutMaxFloat),
 		}
 	}
 

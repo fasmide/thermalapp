@@ -22,9 +22,51 @@ import (
 	"thermalapp/colorize"
 )
 
+const (
+	epsDropdownItemHeightDp = 26  // height of each emissivity dropdown item in dp
+	epsDropdownWidthDp      = 280 // width of the emissivity dropdown in dp
+	statusBarHeightDp       = 40  // height of the status bar in dp (used for dropdown positioning)
+	dropdownHeaderTopPadDp  = 6   // top padding for dropdown category headers in dp
+	dropdownItemLeftInsetDp = 16  // left inset for dropdown items in dp
+	hoursPerDay             = 24  // hours per day for formatDuration
+	bufPanelWidthDp         = 420 // width of the buffer settings panel in dp
+	bufPanelHeightDp        = 460 // height of the buffer settings panel in dp
+
+	// Inset constants for dropdown header row.
+	dropdownHeaderInsetDp = 8 // left/right inset for category header rows
+
+	// Inset constants for dropdown item rows.
+	dropdownItemRightInsetDp = 10 // right inset for dropdown items
+	dropdownItemVInsetDp     = 3  // top/bottom inset for dropdown items
+	dropdownDividerInsetDp   = 4  // top/bottom inset for the divider line
+
+	// Frame size calculation.
+	frameBytesPerSample = 4  // bytes per pixel in the frame buffer (float32)
+	frameOverheadBytes  = 64 // fixed overhead bytes added to each frame
+
+	// Effective camera interval when none is configured (≈25 fps).
+	defaultCameraInterval = 40 * time.Millisecond
+
+	// Dropdown button (pill) insets.
+	dropdownBtnHInsetDp = 6 // left/right inset for the dropdown pill button label
+	dropdownBtnVInsetDp = 2 // top/bottom inset for the dropdown pill button label
+
+	// Buffer panel insets.
+	bufPanelHInsetDp        = 12 // left/right inset for buffer panel sections
+	bufPanelItemLInsetDp    = 16 // left inset for buffer panel list items
+	bufPanelItemRInsetDp    = 12 // right inset for buffer panel list items
+	bufPanelItemVInsetDp    = 3  // top/bottom inset for buffer panel list items
+	bufPanelDivVInsetDp     = 4  // top/bottom inset for buffer panel divider
+	bufPanelHdrTopInsetDp   = 10 // top inset for buffer panel header section
+	bufPanelSectionVInsetDp = 2  // top/bottom inset for buffer panel section headers
+	bufPanelHeaderBotDp     = 2  // bottom inset for dropdown category header row
+)
+
 // dropdownButton renders a small clickable pill button used to open dropdowns
 // in the status bar. It highlights on hover and turns blue when isOpen is true.
-func dropdownButton(gtx layout.Context, th *material.Theme, click *widget.Clickable, isOpen bool, label string) layout.Dimensions {
+func dropdownButton(
+	gtx layout.Context, th *material.Theme, click *widget.Clickable, isOpen bool, label string,
+) layout.Dimensions {
 	lightGray := color.NRGBA{R: 220, G: 220, B: 220, A: 255}
 
 	return material.Clickable(gtx, click, func(gtx layout.Context) layout.Dimensions {
@@ -43,7 +85,10 @@ func dropdownButton(gtx layout.Context, th *material.Theme, click *widget.Clicka
 				return layout.Dimensions{Size: gtx.Constraints.Min}
 			},
 			func(gtx layout.Context) layout.Dimensions {
-				return layout.Inset{Left: unit.Dp(6), Right: unit.Dp(6), Top: unit.Dp(2), Bottom: unit.Dp(2)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+				return layout.Inset{
+					Left: unit.Dp(dropdownBtnHInsetDp), Right: unit.Dp(dropdownBtnHInsetDp),
+					Top: unit.Dp(dropdownBtnVInsetDp), Bottom: unit.Dp(dropdownBtnVInsetDp),
+				}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 					lbl := material.Body2(th, label)
 					lbl.Color = lightGray
 
@@ -170,8 +215,8 @@ func (d *EmissivityDropdown) Layout(gtx layout.Context, th *material.Theme, curr
 	}
 
 	// Dropdown dimensions
-	itemH := gtx.Dp(unit.Dp(26))
-	dropW := gtx.Dp(unit.Dp(280))
+	itemH := gtx.Dp(unit.Dp(epsDropdownItemHeightDp))
+	dropW := gtx.Dp(unit.Dp(epsDropdownWidthDp))
 	maxVisibleItems := 16
 	nRows := len(d.rows)
 	visibleRows := nRows
@@ -182,7 +227,7 @@ func (d *EmissivityDropdown) Layout(gtx layout.Context, th *material.Theme, curr
 
 	// Position: bottom-center of window (above status bar)
 	x := (gtx.Constraints.Max.X - dropW) / 2
-	y := gtx.Constraints.Max.Y - dropH - gtx.Dp(unit.Dp(40))
+	y := gtx.Constraints.Max.Y - dropH - gtx.Dp(unit.Dp(statusBarHeightDp))
 	if y < 0 {
 		y = 0
 	}
@@ -212,8 +257,8 @@ func (d *EmissivityDropdown) Layout(gtx layout.Context, th *material.Theme, curr
 		if row.isHeader {
 			// Category header — not clickable
 			return layout.Inset{
-				Left: unit.Dp(8), Right: unit.Dp(8),
-				Top: unit.Dp(6), Bottom: unit.Dp(2),
+				Left: unit.Dp(dropdownHeaderInsetDp), Right: unit.Dp(dropdownHeaderInsetDp),
+				Top: unit.Dp(dropdownHeaderTopPadDp), Bottom: unit.Dp(bufPanelHeaderBotDp),
 			}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 				lbl := material.Caption(th, row.category)
 				lbl.Color = headerColor
@@ -254,8 +299,8 @@ func (d *EmissivityDropdown) Layout(gtx layout.Context, th *material.Theme, curr
 				}),
 				layout.Stacked(func(gtx layout.Context) layout.Dimensions {
 					return layout.Inset{
-						Left: unit.Dp(16), Right: unit.Dp(10),
-						Top: unit.Dp(3), Bottom: unit.Dp(3),
+						Left: unit.Dp(dropdownItemLeftInsetDp), Right: unit.Dp(dropdownItemRightInsetDp),
+						Top: unit.Dp(dropdownItemVInsetDp), Bottom: unit.Dp(dropdownItemVInsetDp),
 					}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 						return layout.Flex{Axis: layout.Horizontal, Spacing: layout.SpaceBetween}.Layout(gtx,
 							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
@@ -424,7 +469,8 @@ func formatDuration(d time.Duration) string {
 	if d < 24*time.Hour {
 		return fmt.Sprintf("%.1f hrs", d.Hours())
 	}
-	return fmt.Sprintf("%.1f days", d.Hours()/24)
+
+	return fmt.Sprintf("%.1f days", d.Hours()/hoursPerDay)
 }
 
 // Layout draws the panel overlay. Returns a result indicating what changed.
@@ -465,14 +511,14 @@ func (p *BufferPanel) Layout(gtx layout.Context, th *material.Theme, currentByte
 	}
 
 	// Compute estimates
-	frameBytes := int64(sensorPixels)*4 + 64
+	frameBytes := int64(sensorPixels)*frameBytesPerSample + frameOverheadBytes
 	maxFrames := currentBytes / frameBytes
 	if maxFrames < 1 {
 		maxFrames = 1
 	}
 	effectiveInterval := currentInterval
 	if effectiveInterval == 0 {
-		effectiveInterval = 40 * time.Millisecond // ~25fps camera
+		effectiveInterval = defaultCameraInterval // ~25fps camera
 	}
 	coverage := time.Duration(maxFrames) * effectiveInterval
 
@@ -483,8 +529,8 @@ func (p *BufferPanel) Layout(gtx layout.Context, th *material.Theme, currentByte
 	}
 
 	// Panel dimensions
-	panelW := gtx.Dp(unit.Dp(420))
-	panelH := gtx.Dp(unit.Dp(460))
+	panelW := gtx.Dp(unit.Dp(bufPanelWidthDp))
+	panelH := gtx.Dp(unit.Dp(bufPanelHeightDp))
 	x := (gtx.Constraints.Max.X - panelW) / 2
 	y := (gtx.Constraints.Max.Y - panelH) / 2
 	if y < 0 {
@@ -516,7 +562,14 @@ func (p *BufferPanel) Layout(gtx layout.Context, th *material.Theme, currentByte
 	layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 		// Header: available memory + time estimate
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			return layout.Inset{Left: unit.Dp(12), Right: unit.Dp(12), Top: unit.Dp(10), Bottom: unit.Dp(4)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+			hdrInset := layout.Inset{
+				Left:   unit.Dp(bufPanelHInsetDp),
+				Right:  unit.Dp(bufPanelHInsetDp),
+				Top:    unit.Dp(bufPanelHdrTopInsetDp),
+				Bottom: unit.Dp(bufPanelDivVInsetDp),
+			}
+
+			return hdrInset.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 				return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 						lbl := material.Body1(th, "Buffer Settings")
@@ -526,7 +579,9 @@ func (p *BufferPanel) Layout(gtx layout.Context, th *material.Theme, currentByte
 						return lbl.Layout(gtx)
 					}),
 					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						return layout.Inset{Top: unit.Dp(4)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+						divInset := layout.Inset{Top: unit.Dp(dropdownDividerInsetDp)}
+
+						return divInset.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 							txt := fmt.Sprintf("Available RAM: %s    |    Coverage: ≈ %s", availStr, formatDuration(coverage))
 							lbl := material.Body2(th, txt)
 							lbl.Color = accentGreen
@@ -539,7 +594,13 @@ func (p *BufferPanel) Layout(gtx layout.Context, th *material.Theme, currentByte
 		}),
 		// Buffer size section
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			return layout.Inset{Left: unit.Dp(12), Top: unit.Dp(8), Bottom: unit.Dp(2)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+			sizeHdrInset := layout.Inset{
+				Left:   unit.Dp(bufPanelHInsetDp),
+				Top:    unit.Dp(dropdownHeaderTopPadDp),
+				Bottom: unit.Dp(bufPanelSectionVInsetDp),
+			}
+
+			return sizeHdrInset.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 				lbl := material.Caption(th, "BUFFER SIZE")
 				lbl.Color = headerColor
 				lbl.Font.Weight = font.Bold
@@ -587,7 +648,10 @@ func (p *BufferPanel) Layout(gtx layout.Context, th *material.Theme, currentByte
 							return layout.Dimensions{Size: gtx.Constraints.Min}
 						}),
 						layout.Stacked(func(gtx layout.Context) layout.Dimensions {
-							return layout.Inset{Left: unit.Dp(16), Right: unit.Dp(12), Top: unit.Dp(3), Bottom: unit.Dp(3)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+							return layout.Inset{
+								Left: unit.Dp(bufPanelItemLInsetDp), Right: unit.Dp(bufPanelItemRInsetDp),
+								Top: unit.Dp(bufPanelItemVInsetDp), Bottom: unit.Dp(bufPanelItemVInsetDp),
+							}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 								lbl := material.Body2(th, label)
 								if avail > 0 && pr.Bytes > avail {
 									lbl.Color = dimGray
@@ -607,7 +671,14 @@ func (p *BufferPanel) Layout(gtx layout.Context, th *material.Theme, currentByte
 		}),
 		// Divider
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			return layout.Inset{Left: unit.Dp(12), Right: unit.Dp(12), Top: unit.Dp(4), Bottom: unit.Dp(4)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+			divInset := layout.Inset{
+				Left:   unit.Dp(bufPanelHInsetDp),
+				Right:  unit.Dp(bufPanelHInsetDp),
+				Top:    unit.Dp(bufPanelDivVInsetDp),
+				Bottom: unit.Dp(bufPanelDivVInsetDp),
+			}
+
+			return divInset.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 				size := image.Pt(gtx.Constraints.Max.X, gtx.Dp(unit.Dp(1)))
 				defer clip.Rect{Max: size}.Push(gtx.Ops).Pop()
 				paint.Fill(gtx.Ops, color.NRGBA{R: 70, G: 70, B: 70, A: 255})
@@ -617,7 +688,13 @@ func (p *BufferPanel) Layout(gtx layout.Context, th *material.Theme, currentByte
 		}),
 		// Sample rate section
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			return layout.Inset{Left: unit.Dp(12), Top: unit.Dp(2), Bottom: unit.Dp(2)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+			rateHdrInset := layout.Inset{
+				Left:   unit.Dp(bufPanelHInsetDp),
+				Top:    unit.Dp(bufPanelSectionVInsetDp),
+				Bottom: unit.Dp(bufPanelSectionVInsetDp),
+			}
+
+			return rateHdrInset.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 				lbl := material.Caption(th, "SAMPLE RATE")
 				lbl.Color = headerColor
 				lbl.Font.Weight = font.Bold
@@ -651,7 +728,7 @@ func (p *BufferPanel) Layout(gtx layout.Context, th *material.Theme, currentByte
 				// Compute coverage at this rate
 				eff := pr.Interval
 				if eff == 0 {
-					eff = 40 * time.Millisecond
+					eff = defaultCameraInterval
 				}
 				cov := time.Duration(maxFrames) * eff
 				covLabel := formatDuration(cov)
@@ -667,7 +744,10 @@ func (p *BufferPanel) Layout(gtx layout.Context, th *material.Theme, currentByte
 							return layout.Dimensions{Size: gtx.Constraints.Min}
 						}),
 						layout.Stacked(func(gtx layout.Context) layout.Dimensions {
-							return layout.Inset{Left: unit.Dp(16), Right: unit.Dp(12), Top: unit.Dp(3), Bottom: unit.Dp(3)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+							return layout.Inset{
+								Left: unit.Dp(bufPanelItemLInsetDp), Right: unit.Dp(bufPanelItemRInsetDp),
+								Top: unit.Dp(bufPanelItemVInsetDp), Bottom: unit.Dp(bufPanelItemVInsetDp),
+							}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 								return layout.Flex{Axis: layout.Horizontal, Spacing: layout.SpaceBetween}.Layout(gtx,
 									layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 										lbl := material.Body2(th, pr.Label)

@@ -16,6 +16,11 @@ import (
 	"thermalapp/camera"
 )
 
+const (
+	// pausedPollInterval is how often ReadFrame checks for unpause when paused.
+	pausedPollInterval = 50 * time.Millisecond
+)
+
 // Player reads frames from a .tha recording file and implements camera.Camera
 // so it can be used in place of a live camera for the UI.
 type Player struct {
@@ -39,50 +44,50 @@ type Player struct {
 
 // NewPlayer opens a .tha file for playback.
 func NewPlayer(filename string) (*Player, error) {
-	f, err := os.Open(filename)
+	file, err := os.Open(filename)
 	if err != nil {
 		return nil, fmt.Errorf("open recording: %w", err)
 	}
 
-	h, err := readHeader(f)
+	hdr, err := readHeader(file)
 	if err != nil {
-		f.Close()
+		file.Close()
 
 		return nil, err
 	}
 
-	p := &Player{
-		file:      f,
-		header:    h,
-		frameBuf:  make([]byte, h.framePayloadSize()),
+	player := &Player{
+		file:      file,
+		header:    hdr,
+		frameBuf:  make([]byte, hdr.framePayloadSize()),
 		firstRead: true,
 	}
 
-	if err := p.buildIndex(); err != nil {
-		f.Close()
+	if err := player.buildIndex(); err != nil {
+		file.Close()
 
 		return nil, fmt.Errorf("build index: %w", err)
 	}
 
 	// Memory-map the file for lock-free random frame access
-	fi, err := f.Stat()
+	fileInfo, err := file.Stat()
 	if err != nil {
-		f.Close()
+		file.Close()
 
 		return nil, fmt.Errorf("stat recording: %w", err)
 	}
-	data, err := syscall.Mmap(int(f.Fd()), 0, int(fi.Size()), syscall.PROT_READ, syscall.MAP_PRIVATE)
+	data, err := syscall.Mmap(int(file.Fd()), 0, int(fileInfo.Size()), syscall.PROT_READ, syscall.MAP_PRIVATE)
 	if err != nil {
-		f.Close()
+		file.Close()
 
 		return nil, fmt.Errorf("mmap recording: %w", err)
 	}
 	// Tell the kernel: random access pattern, and pages can be reclaimed freely.
 	_ = syscall.Madvise(data, syscall.MADV_RANDOM)
 	_ = syscall.Madvise(data, syscall.MADV_DONTNEED)
-	p.mmap = data
+	player.mmap = data
 
-	return p, nil
+	return player, nil
 }
 
 // buildIndex scans through the file to record the byte offset of each frame.
@@ -257,7 +262,7 @@ func (p *Player) ReadFrame() (*camera.Frame, error) {
 	p.mu.Unlock()
 
 	if paused {
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(pausedPollInterval)
 
 		return nil, fmt.Errorf("paused")
 	}
@@ -365,8 +370,8 @@ func (p *Player) inflate(compressed []byte) error {
 
 // parseFrameData decodes the decompressed frame buffer into a camera.Frame.
 func (p *Player) parseFrameData() *camera.Frame {
-	w := int(p.header.Width)
-	h := int(p.header.Height)
+	width := int(p.header.Width)
+	height := int(p.header.Height)
 	off := timestampSize
 
 	// Flags byte
@@ -377,21 +382,21 @@ func (p *Player) parseFrameData() *camera.Frame {
 	hwFrameCnt := binary.LittleEndian.Uint16(p.frameBuf[off : off+2])
 	off += 2
 
-	thermalCount := w * h
+	thermalCount := width * height
 	thermal := make([]uint16, thermalCount)
 	for i := range thermalCount {
 		thermal[i] = binary.LittleEndian.Uint16(p.frameBuf[off : off+2])
 		off += 2
 	}
 
-	ir := make([]uint8, w*h)
-	copy(ir, p.frameBuf[off:off+w*h])
+	ir := make([]uint8, width*height)
+	copy(ir, p.frameBuf[off:off+width*height])
 
 	return &camera.Frame{
 		Thermal:              thermal,
 		IR:                   ir,
-		Width:                w,
-		Height:               h,
+		Width:                width,
+		Height:               height,
 		ShutterActive:        flags&0x01 != 0,
 		HardwareFrameCounter: hwFrameCnt,
 	}
@@ -423,15 +428,15 @@ func (p *Player) ReadFrameAt(idx int) (*camera.Frame, time.Time, error) {
 	compressed := mmap[dataStart:dataEnd]
 
 	payloadSize := p.header.framePayloadSize()
-	w, h := int(p.header.Width), int(p.header.Height)
+	width, height := int(p.header.Width), int(p.header.Height)
 
 	// Decompress (the expensive part — runs without any lock)
 	buf := make([]byte, payloadSize)
-	r := flate.NewReader(bytes.NewReader(compressed))
-	n, err := io.ReadFull(r, buf)
-	r.Close()
+	decompReader := flate.NewReader(bytes.NewReader(compressed))
+	bytesRead, err := io.ReadFull(decompReader, buf)
+	decompReader.Close()
 	if err != nil && err != io.ErrUnexpectedEOF {
-		return nil, time.Time{}, fmt.Errorf("decompress frame %d: read %d bytes: %w", idx, n, err)
+		return nil, time.Time{}, fmt.Errorf("decompress frame %d: read %d bytes: %w", idx, bytesRead, err)
 	}
 
 	tsNs := int64(binary.LittleEndian.Uint64(buf[0:8]))
@@ -443,19 +448,19 @@ func (p *Player) ReadFrameAt(idx int) (*camera.Frame, time.Time, error) {
 	hwFC := binary.LittleEndian.Uint16(buf[foff : foff+2])
 	foff += 2
 
-	thermal := make([]uint16, w*h)
+	thermal := make([]uint16, width*height)
 	for i := range thermal {
 		thermal[i] = binary.LittleEndian.Uint16(buf[foff : foff+2])
 		foff += 2
 	}
-	ir := make([]uint8, w*h)
-	copy(ir, buf[foff:foff+w*h])
+	ir := make([]uint8, width*height)
+	copy(ir, buf[foff:foff+width*height])
 
 	return &camera.Frame{
 		Thermal:              thermal,
 		IR:                   ir,
-		Width:                w,
-		Height:               h,
+		Width:                width,
+		Height:               height,
 		ShutterActive:        flags&0x01 != 0,
 		HardwareFrameCounter: hwFC,
 	}, frameTime, nil

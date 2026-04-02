@@ -1,5 +1,10 @@
 package colorize
 
+const (
+	ambientFallbackC  = 20.0 // default ambient temperature estimate (°C)
+	maxAmbientSamples = 4096 // max pixel samples for ambient estimation
+)
+
 // Emissivity correction for non-blackbody surface temperature measurement.
 //
 // The infrared camera measures apparent (radiometric) temperature assuming
@@ -112,14 +117,14 @@ func CorrectEmissivity(tMeasured, tReflected, emissivity float32) float32 {
 func EstimateAmbient(celsius []float32) float32 {
 	n := len(celsius)
 	if n == 0 {
-		return 20.0 // reasonable fallback
+		return ambientFallbackC
 	}
 
 	// Use a partial sort approach: find the median via quickselect-like sampling
-	// For performance, sample up to 4096 pixels evenly spaced
+	// For performance, sample up to maxAmbientSamples pixels evenly spaced
 	step := 1
-	if n > 4096 {
-		step = n / 4096
+	if n > maxAmbientSamples {
+		step = n / maxAmbientSamples
 	}
 
 	var sum float64

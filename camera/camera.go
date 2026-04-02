@@ -40,9 +40,16 @@ type Frame struct {
 	HardwareFrameCounter uint16
 }
 
+const (
+	// rawThermalScale is the divisor converting raw thermal units to Kelvin (1/64 K per LSB).
+	rawThermalScale = 64.0
+	// kelvinOffset is the offset from Kelvin to Celsius.
+	kelvinOffset = 273.15
+)
+
 // ToCelsius converts a raw uint16 thermal value to degrees Celsius.
 func ToCelsius(raw uint16) float32 {
-	return (float32(raw) / 64.0) - 273.15
+	return (float32(raw) / rawThermalScale) - kelvinOffset
 }
 
 // Camera is the interface for a thermal camera device.

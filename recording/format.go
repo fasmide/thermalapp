@@ -35,6 +35,7 @@ const (
 	timestampSize      = 8
 	frameMetaSize      = 3 // 1 byte flags + 2 bytes HardwareFrameCounter
 	frameSizePrefixLen = 4
+	uint16ByteSize     = 2 // bytes per uint16 sample in the thermal frame
 )
 
 // Header is the file header.
@@ -48,7 +49,7 @@ type Header struct {
 // frameDataSize returns the byte size of one uncompressed frame payload (excluding timestamp).
 func (h Header) frameDataSize() int {
 	w, ht := int(h.Width), int(h.Height)
-	thermal := w * ht * 2
+	thermal := w * ht * uint16ByteSize
 	ir := w * ht
 
 	return thermal + ir
@@ -59,15 +60,15 @@ func (h Header) framePayloadSize() int {
 	return timestampSize + frameMetaSize + h.frameDataSize()
 }
 
-func writeHeader(w io.Writer, h Header) error {
+func writeHeader(out io.Writer, hdr Header) error {
 	var buf [headerSize]byte
 	copy(buf[0:8], magic[:])
 	binary.LittleEndian.PutUint16(buf[8:10], formatVersion)
-	binary.LittleEndian.PutUint16(buf[10:12], h.Width)
-	binary.LittleEndian.PutUint16(buf[12:14], h.Height)
-	binary.LittleEndian.PutUint32(buf[14:18], h.FrameCount)
-	binary.LittleEndian.PutUint64(buf[18:26], uint64(h.StartTime))
-	_, err := w.Write(buf[:])
+	binary.LittleEndian.PutUint16(buf[10:12], hdr.Width)
+	binary.LittleEndian.PutUint16(buf[12:14], hdr.Height)
+	binary.LittleEndian.PutUint32(buf[14:18], hdr.FrameCount)
+	binary.LittleEndian.PutUint64(buf[18:26], uint64(hdr.StartTime))
+	_, err := out.Write(buf[:])
 	if err != nil {
 		return fmt.Errorf("write header: %w", err)
 	}

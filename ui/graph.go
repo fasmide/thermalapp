@@ -20,6 +20,35 @@ import (
 	"thermalapp/colorize"
 )
 
+const (
+	graphWindowWidthDp  = 600    // initial width of a graph window in dp
+	graphWindowHeightDp = 250    // initial height of a graph window in dp
+	graphMarginDp       = 40     // left/right margin for graph axes in dp
+	graphBottomDp       = 20     // bottom margin for graph in dp
+	graphWaitMsgXOff    = 30     // x offset for "waiting" message from center
+	minSamplesForGraph  = 2      // minimum samples required to draw the graph
+	minTempRangeC       = 3.0    // minimum temperature range for Y axis (°C)
+	graphTitleInsetDp   = 4      // uniform inset inside the graph title bar
+	graphTopMarginDp    = 4      // top margin before the first graph Y tick in dp
+	graphLabelXOff      = 4      // x pixel offset from graph right edge to current-value label
+	graphLabelYOff      = 6      // y pixel half-height correction for current-value label
+	graphPadFrac        = 0.05   // fractional padding added to Y axis range on each side
+	msPerSecond         = 1000.0 // milliseconds per second (for render-time conversion)
+	graphCenterDiv      = 2      // divisor for centering labels horizontally/vertically
+	graphAxisLabelXOff  = 2      // x offset for Y-axis temperature labels from left edge
+	graphAxisLabelYAdj  = 6      // y pixel upward adjustment for Y-axis temperature labels
+	drawLineMinLength  = 0.5 // minimum line length (px) before drawLine is a no-op
+	drawLinePixelSize  = 2   // pixel width/height of each segment in drawLine
+
+	// LTTB downsampling algorithm constants.
+	lttbBoundaryPoints = 2 // number of fixed boundary points (first + last) in LTTB
+	lttbBucketOffset   = 1 // bucket index offset used in LTTB bucket averaging
+
+	// rightTitleFmt is the format string for the right side of the graph title bar.
+	rightTitleFmt = "|  Now: %.1f°C  |  Min: %.1f  Max: %.1f  Mean: %.1f  s: %.2f" +
+		"  |  %d / %s  |  %.0fms  E2E %.0fms"
+)
+
 // GraphWindow manages a separate window displaying a temperature graph for a Spot.
 type GraphWindow struct {
 	spot        *Spot
@@ -39,7 +68,7 @@ func NewGraphWindow(spot *Spot, pixSrc PixelQuerier) *GraphWindow {
 	var w app.Window
 	w.Option(
 		app.Title(fmt.Sprintf("Spot %d — Temperature Graph", spot.Index)),
-		app.Size(unit.Dp(600), unit.Dp(250)),
+		app.Size(unit.Dp(graphWindowWidthDp), unit.Dp(graphWindowHeightDp)),
 	)
 	gw := &GraphWindow{
 		spot:        spot,
@@ -91,7 +120,7 @@ func (gw *GraphWindow) run() {
 
 func (gw *GraphWindow) layoutGraph(gtx layout.Context) layout.Dimensions {
 	start := time.Now()
-	defer func() { gw.renderMs = float64(time.Since(start).Microseconds()) / 1000.0 }()
+	defer func() { gw.renderMs = float64(time.Since(start).Microseconds()) / msPerSecond }()
 
 	// Fetch graph data: buffer for cursor/user, spot ring buffer for min/max
 	var allSamples []Sample
@@ -130,8 +159,8 @@ func (gw *GraphWindow) layoutGraph(gtx layout.Context) layout.Dimensions {
 			}
 
 			leftTitle := fmt.Sprintf("Spot %d (%s)  |", spot.Index, kindStr)
-			latencyMs := float64(time.Since(spot.LastMoveTime()).Microseconds()) / 1000.0
-			rightTitle := fmt.Sprintf("|  Now: %.1f°C  |  Min: %.1f  Max: %.1f  Mean: %.1f  s: %.2f  |  %d / %s  |  %.0fms  E2E %.0fms",
+			latencyMs := float64(time.Since(spot.LastMoveTime()).Microseconds()) / msPerSecond
+			rightTitle := fmt.Sprintf(rightTitleFmt,
 				st.Current, st.Min, st.Max, st.Mean, st.StdDev, st.Count, dur, gw.renderMs, latencyMs)
 
 			lightGray := color.NRGBA{R: 220, G: 220, B: 220, A: 255}
@@ -141,7 +170,7 @@ func (gw *GraphWindow) layoutGraph(gtx layout.Context) layout.Dimensions {
 				gw.epsDropdown.Toggle(currentIdx)
 			}
 
-			return layout.UniformInset(unit.Dp(4)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+			return layout.UniformInset(unit.Dp(graphTitleInsetDp)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 				return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
 					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 						lbl := material.Body2(gw.theme, leftTitle)
@@ -188,11 +217,11 @@ func (gw *GraphWindow) drawGraph(gtx layout.Context, allSamples []Sample) layout
 		return layout.Dimensions{Size: image.Pt(w, h)}
 	}
 
-	margin := gtx.Dp(unit.Dp(40))
+	margin := gtx.Dp(unit.Dp(graphMarginDp))
 	graphX := margin
 	graphW := w - margin*2
-	graphY := gtx.Dp(unit.Dp(4))
-	graphH := h - graphY - gtx.Dp(unit.Dp(20))
+	graphY := gtx.Dp(unit.Dp(graphTopMarginDp))
+	graphH := h - graphY - gtx.Dp(unit.Dp(graphBottomDp))
 
 	if graphW < 10 || graphH < 10 {
 		return layout.Dimensions{Size: image.Pt(w, h)}
@@ -203,8 +232,8 @@ func (gw *GraphWindow) drawGraph(gtx layout.Context, allSamples []Sample) layout
 	if len(samples) > graphW && graphW > 0 {
 		samples = downsample(allSamples, graphW)
 	}
-	if len(samples) < 2 {
-		s := op.Offset(image.Pt(w/2-30, h/2)).Push(gtx.Ops)
+	if len(samples) < minSamplesForGraph {
+		s := op.Offset(image.Pt(w/graphCenterDiv-graphWaitMsgXOff, h/graphCenterDiv)).Push(gtx.Ops)
 		lbl := material.Body2(gw.theme, "Waiting for data...")
 		lbl.Color = color.NRGBA{R: 150, G: 150, B: 150, A: 255}
 		lbl.Layout(gtx)
@@ -224,15 +253,15 @@ func (gw *GraphWindow) drawGraph(gtx layout.Context, allSamples []Sample) layout
 		}
 	}
 
-	// Add some padding to the range (minimum 3°C so noise doesn't dominate)
+	// Add some padding to the range (minimum minTempRangeC so noise doesn't dominate)
 	rangeT := maxT - minT
-	if rangeT < 3.0 {
+	if rangeT < minTempRangeC {
 		mid := (minT + maxT) / 2
-		minT = mid - 1.5
-		maxT = mid + 1.5
-		rangeT = 3.0
+		minT = mid - minTempRangeC/2
+		maxT = mid + minTempRangeC/2
+		rangeT = minTempRangeC
 	} else {
-		pad := rangeT * 0.05
+		pad := rangeT * graphPadFrac
 		minT -= pad
 		maxT += pad
 		rangeT = maxT - minT
@@ -251,7 +280,7 @@ func (gw *GraphWindow) drawGraph(gtx layout.Context, allSamples []Sample) layout
 		s.Pop()
 
 		// Label
-		ls := op.Offset(image.Pt(2, y-6)).Push(gtx.Ops)
+		ls := op.Offset(image.Pt(graphAxisLabelXOff, y-graphAxisLabelYAdj)).Push(gtx.Ops)
 		lbl := material.Caption(gw.theme, fmt.Sprintf("%.1f", temp))
 		lbl.Color = color.NRGBA{R: 150, G: 150, B: 150, A: 255}
 		lbl.Layout(gtx)
@@ -277,7 +306,7 @@ func (gw *GraphWindow) drawGraph(gtx layout.Context, allSamples []Sample) layout
 	// Current value label at right edge
 	last := samples[n-1]
 	ly := float32(graphY) + (1-(last.Temp-minT)/rangeT)*float32(graphH)
-	ls := op.Offset(image.Pt(graphX+graphW+4, int(ly)-6)).Push(gtx.Ops)
+	ls := op.Offset(image.Pt(graphX+graphW+graphLabelXOff, int(ly)-graphLabelYOff)).Push(gtx.Ops)
 	lbl := material.Caption(gw.theme, fmt.Sprintf("%.1f°", last.Temp))
 	lbl.Color = spotColor
 	lbl.Layout(gtx)
@@ -291,7 +320,7 @@ func drawLine(gtx layout.Context, x0, y0, x1, y1 float32, col color.NRGBA) {
 	dx := x1 - x0
 	dy := y1 - y0
 	length := float32(math.Sqrt(float64(dx*dx + dy*dy)))
-	if length < 0.5 {
+	if length < drawLineMinLength {
 		return
 	}
 
@@ -301,7 +330,7 @@ func drawLine(gtx layout.Context, x0, y0, x1, y1 float32, col color.NRGBA) {
 		t := float32(s) / float32(steps)
 		px := int(x0 + dx*t)
 		py := int(y0 + dy*t)
-		r := clip.Rect{Min: image.Pt(px, py), Max: image.Pt(px+2, py+2)}.Push(gtx.Ops)
+		r := clip.Rect{Min: image.Pt(px, py), Max: image.Pt(px+drawLinePixelSize, py+drawLinePixelSize)}.Push(gtx.Ops)
 		paint.Fill(gtx.Ops, col)
 		r.Pop()
 	}
@@ -317,14 +346,14 @@ func downsample(data []Sample, n int) []Sample {
 	out := make([]Sample, 0, n)
 	out = append(out, data[0]) // Always keep first
 
-	bucketSize := float64(len(data)-2) / float64(n-2)
+	bucketSize := float64(len(data)-lttbBoundaryPoints) / float64(n-lttbBoundaryPoints)
 
 	a := 0 // Index of the previous selected point
 
 	for i := 1; i < n-1; i++ {
 		// Calculate the average of the next bucket (for the triangle)
-		avgStart := int(float64(i+1)*bucketSize) + 1
-		avgEnd := int(float64(i+2)*bucketSize) + 1
+		avgStart := int(float64(i+lttbBucketOffset)*bucketSize) + lttbBucketOffset
+		avgEnd := int(float64(i+lttbBoundaryPoints)*bucketSize) + lttbBucketOffset
 		if avgEnd > len(data) {
 			avgEnd = len(data)
 		}

@@ -21,25 +21,31 @@ var commands = map[string][]byte{
 	"shutter": hexBytes("01364300000000000000000000000000cd0b"),
 }
 
+const (
+	hexCharsPerByte = 2  // two hex digits encode one byte
+	hexNibbleShift  = 4  // high nibble shift in a byte
+	hexDecimalBase  = 10 // offset from 'a'/'A' to decimal value 10
+)
+
 // hexBytes converts a hex string to []byte. Panics on invalid input (init-time only).
 func hexBytes(s string) []byte {
-	b := make([]byte, len(s)/2)
-	for i := 0; i < len(s); i += 2 {
-		b[i/2] = hexNibble(s[i])<<4 | hexNibble(s[i+1])
+	b := make([]byte, len(s)/hexCharsPerByte)
+	for i := 0; i < len(s); i += hexCharsPerByte {
+		b[i/hexCharsPerByte] = hexNibble(s[i])<<hexNibbleShift | hexNibble(s[i+1])
 	}
 
 	return b
 }
 
-func hexNibble(c byte) byte {
+func hexNibble(nibble byte) byte {
 	switch {
-	case c >= '0' && c <= '9':
-		return c - '0'
-	case c >= 'a' && c <= 'f':
-		return c - 'a' + 10
-	case c >= 'A' && c <= 'F':
-		return c - 'A' + 10
+	case nibble >= '0' && nibble <= '9':
+		return nibble - '0'
+	case nibble >= 'a' && nibble <= 'f':
+		return nibble - 'a' + hexDecimalBase
+	case nibble >= 'A' && nibble <= 'F':
+		return nibble - 'A' + hexDecimalBase
 	default:
-		panic("invalid hex nibble: " + string(c))
+		panic("invalid hex nibble: " + string(nibble))
 	}
 }

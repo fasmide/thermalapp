@@ -17,6 +17,37 @@ const (
 	p3PID = 0x45A2
 
 	chunkSize = 16384 // USB bulk read chunk size
+
+	// USB control-transfer bmRequestType values.
+	usbCtrlVendorOut = 0x40 // host-to-device | vendor | interface
+	usbCtrlVendorIn  = 0xC1 // device-to-host | vendor | interface
+	usbCmdSend       = 0x41 // OUT | VENDOR | INTERFACE (used in sendCommand)
+
+	// USB vendor command codes.
+	usbBRequestSend        = 0x20 // send command bRequest
+	usbBRequestResponse    = 0x21 // read response bRequest
+	usbBRequestStatus      = 0x22 // read status bRequest
+	usbBRequestStartStream = 0xEE // start streaming bRequest
+
+	// Bulk IN endpoint address for streaming.
+	usbStreamEndpoint = 0x81
+
+	// Register buffer sizes used in Init().
+	regNameLen      = 30
+	regVersionLen   = 12
+	regPartNumLen   = 64
+	regSerialLen    = 64
+	regHWVersionLen = 64
+
+	// Metadata layout.
+	metadataMaxIdx = 64 // register index of the camera frame counter
+
+	// Startup timing delays.
+	startStreamDelay1 = 1 * time.Second // delay before switching to alt interface
+	startStreamDelay2 = 2 * time.Second // delay after sending 0xEE before bulk read
+
+	// Frame boundary markers.
+	markerCount = 2 // number of start/end markers surrounding each frame
 )
 
 // P3Camera drives the Thermal Master P3 USB thermal camera.
@@ -116,31 +147,31 @@ func (c *P3Camera) Connect() error {
 func (c *P3Camera) Init() (DeviceInfo, error) {
 	var info DeviceInfo
 
-	name, err := c.readRegister("read_name", 30)
+	name, err := c.readRegister("read_name", regNameLen)
 	if err != nil {
 		return info, fmt.Errorf("read name: %w", err)
 	}
 	info.Model = trimNull(name)
 
-	ver, err := c.readRegister("read_version", 12)
+	ver, err := c.readRegister("read_version", regVersionLen)
 	if err != nil {
 		return info, fmt.Errorf("read version: %w", err)
 	}
 	info.FWVersion = trimNull(ver)
 
-	pn, err := c.readRegister("read_part_number", 64)
+	pn, err := c.readRegister("read_part_number", regPartNumLen)
 	if err != nil {
 		return info, fmt.Errorf("read part number: %w", err)
 	}
 	info.PartNumber = trimNull(pn)
 
-	serial, err := c.readRegister("read_serial", 64)
+	serial, err := c.readRegister("read_serial", regSerialLen)
 	if err != nil {
 		return info, fmt.Errorf("read serial: %w", err)
 	}
 	info.Serial = trimNull(serial)
 
-	hw, err := c.readRegister("read_hw_version", 64)
+	hw, err := c.readRegister("read_hw_version", regHWVersionLen)
 	if err != nil {
 		return info, fmt.Errorf("read hw version: %w", err)
 	}
@@ -164,7 +195,7 @@ func (c *P3Camera) StartStreaming() error {
 		return fmt.Errorf("start_stream status 2: %w", err)
 	}
 
-	time.Sleep(1 * time.Second)
+	time.Sleep(startStreamDelay1)
 
 	// Switch Interface 1 to alt setting 1 (enables streaming).
 	// Close current claim, re-claim with alt 1.
@@ -177,19 +208,19 @@ func (c *P3Camera) StartStreaming() error {
 	c.intf1 = intf1
 
 	// Find bulk IN endpoint 0x81
-	ep, err := intf1.InEndpoint(0x81)
+	ep, err := intf1.InEndpoint(usbStreamEndpoint)
 	if err != nil {
 		return fmt.Errorf("get endpoint 0x81: %w", err)
 	}
 	c.ep = ep
 
 	// Send 0xEE control transfer (start streaming at device level)
-	_, err = c.dev.Control(0x40, 0xEE, 0, 1, nil)
+	_, err = c.dev.Control(usbCtrlVendorOut, usbBRequestStartStream, 0, 1, nil)
 	if err != nil {
 		return fmt.Errorf("send 0xEE: %w", err)
 	}
 
-	time.Sleep(2 * time.Second)
+	time.Sleep(startStreamDelay2)
 
 	// Attempt initial bulk read (may timeout — expected)
 	tmpBuf := make([]byte, p3FrameSize)
@@ -221,12 +252,12 @@ func (c *P3Camera) ReadFrame() (*Frame, error) {
 		return nil, fmt.Errorf("not streaming")
 	}
 
-	totalSize := p3FrameSize + 2*markerSize
+	totalSize := p3FrameSize + markerCount*markerSize
 	pos := 0
 	chunk := make([]byte, chunkSize)
 
 	for pos < totalSize {
-		n, err := c.ep.Read(chunk)
+		bytesRead, err := c.ep.Read(chunk)
 		if err != nil {
 			return nil, fmt.Errorf("bulk read: %w", err)
 		}
@@ -234,15 +265,15 @@ func (c *P3Camera) ReadFrame() (*Frame, error) {
 		// Frame sync logic (from p3_camera.py read_frame):
 		// End marker is always a 12-byte read. If we get 12 bytes
 		// mid-frame, or exceed total without ending on 12 bytes, resync.
-		nextPos := pos + n
-		if (n == markerSize && nextPos < totalSize) || (nextPos >= totalSize && n != markerSize) {
+		nextPos := pos + bytesRead
+		if (bytesRead == markerSize && nextPos < totalSize) || (nextPos >= totalSize && bytesRead != markerSize) {
 			pos = 0
 			log.Println("frame sync: dropping, resetting")
 
 			continue
 		}
 
-		copy(c.frameBuf[pos:pos+n], chunk[:n])
+		copy(c.frameBuf[pos:pos+bytesRead], chunk[:bytesRead])
 		pos = nextPos
 	}
 
@@ -260,8 +291,8 @@ func (c *P3Camera) ReadFrame() (*Frame, error) {
 
 	// Populate shutter state from metadata registers.
 	// Register 64 = camera frame counter, register 72 = shutter countdown.
-	if len(frame.Metadata) > 64 {
-		frameCnt := frame.Metadata[64]
+	if len(frame.Metadata) > metadataMaxIdx {
+		frameCnt := frame.Metadata[metadataMaxIdx]
 		frame.HardwareFrameCounter = frameCnt
 
 		if c.firstFrame {
@@ -353,8 +384,8 @@ func (c *P3Camera) SetGain(mode GainMode) error {
 
 func (c *P3Camera) sendCommand(cmd []byte) error {
 	_, err := c.dev.Control(
-		0x41, // OUT | VENDOR | INTERFACE
-		0x20,
+		usbCmdSend, // OUT | VENDOR | INTERFACE
+		usbBRequestSend,
 		0, 0,
 		cmd,
 	)
@@ -367,17 +398,17 @@ func (c *P3Camera) sendCommand(cmd []byte) error {
 
 func (c *P3Camera) readResponse(length int) ([]byte, error) {
 	buf := make([]byte, length)
-	n, err := c.dev.Control(0xC1, 0x21, 0, 0, buf)
+	readLen, err := c.dev.Control(usbCtrlVendorIn, usbBRequestResponse, 0, 0, buf)
 	if err != nil {
 		return nil, fmt.Errorf("readResponse: %w", err)
 	}
 
-	return buf[:n], nil
+	return buf[:readLen], nil
 }
 
 func (c *P3Camera) readStatus() (byte, error) {
 	buf := make([]byte, 1)
-	_, err := c.dev.Control(0xC1, 0x22, 0, 0, buf)
+	_, err := c.dev.Control(usbCtrlVendorIn, usbBRequestStatus, 0, 0, buf)
 	if err != nil {
 		return buf[0], fmt.Errorf("readStatus: %w", err)
 	}

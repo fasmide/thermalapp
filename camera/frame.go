@@ -12,10 +12,14 @@ const (
 	p3SensorW = 256
 	p3SensorH = 192
 
+	// uint16ByteSize is the number of bytes per pixel sample (uint16 LE).
+	uint16ByteSize = 2
+
 	// Frame layout: 192 IR rows + 2 metadata rows + 192 thermal rows = 386 total
-	p3FrameRows = 2*p3SensorH + 2
+	p3MetaRows  = 2 // number of metadata rows between IR and thermal data
+	p3FrameRows = 2*p3SensorH + p3MetaRows
 	// Frame data size in bytes (excluding markers)
-	p3FrameSize = 2 * p3FrameRows * p3SensorW // 197,632
+	p3FrameSize = uint16ByteSize * p3FrameRows * p3SensorW // 197,632
 
 )
 
@@ -63,20 +67,20 @@ func ParseP3Frame(data []byte) (*Frame, error) {
 	}
 
 	// Parse metadata: rows 192..193 (2 rows × 256 cols × 2 bytes)
-	metaOffset := p3SensorH * p3SensorW * 2
-	metaCount := 2 * p3SensorW
+	metaOffset := p3SensorH * p3SensorW * uint16ByteSize
+	metaCount := uint16ByteSize * p3SensorW
 	frame.Metadata = make([]uint16, metaCount)
 	for i := range metaCount {
-		off := metaOffset + i*2
+		off := metaOffset + i*uint16ByteSize
 		frame.Metadata[i] = binary.LittleEndian.Uint16(pixels[off : off+2])
 	}
 
 	// Parse thermal data: rows 194..385
-	thermalOffset := (p3SensorH + 2) * p3SensorW * 2
+	thermalOffset := (p3SensorH + p3MetaRows) * p3SensorW * uint16ByteSize
 	thermalCount := p3SensorH * p3SensorW
 	frame.Thermal = make([]uint16, thermalCount)
 	for i := range thermalCount {
-		off := thermalOffset + i*2
+		off := thermalOffset + i*uint16ByteSize
 		frame.Thermal[i] = binary.LittleEndian.Uint16(pixels[off : off+2])
 	}
 

@@ -13,14 +13,21 @@ import (
 	"thermalapp/ui"
 )
 
+const (
+	defaultBufSizeMB  = 500         // default frame buffer size in megabytes
+	bytesPerMB        = 1024 * 1024 // bytes per megabyte
+	metadataRowWidth  = 256         // number of columns per metadata row (matches p3SensorW)
+	metadataPrintCols = 16          // values printed per line in metadata dumps
+)
+
 func main() {
 	playFile := flag.String("play", "", "play back a .tha recording file instead of connecting to camera")
-	bufSizeMB := flag.Int("bufsize", 500, "frame buffer size in megabytes for temperature history")
+	bufSizeMB := flag.Int("bufsize", defaultBufSizeMB, "frame buffer size in megabytes for temperature history")
 	revMeta := flag.Bool("rev_meta", false, "dump frame metadata to terminal for reverse engineering")
 	revMeta2 := flag.Bool("rev_meta2", false, "compact metadata monitor: track key registers, one line per frame")
 	flag.Parse()
 
-	bufBytes := int64(*bufSizeMB) * 1024 * 1024
+	bufBytes := int64(*bufSizeMB) * bytesPerMB
 
 	if *playFile != "" {
 		runPlayback(*playFile, bufBytes)
@@ -170,16 +177,16 @@ func runRevMeta() {
 			// First frame: print all values
 			fmt.Printf("=== Frame %d (initial) ===\n", frameNum)
 			fmt.Println("Row 0:")
-			for i := 0; i < 256 && i < len(meta); i++ {
+			for i := 0; i < metadataRowWidth && i < len(meta); i++ {
 				fmt.Printf("  [%3d]=%04x", i, meta[i])
-				if (i+1)%16 == 0 {
+				if (i+1)%metadataPrintCols == 0 {
 					fmt.Println()
 				}
 			}
 			fmt.Println("Row 1:")
-			for i := 256; i < 512 && i < len(meta); i++ {
+			for i := metadataRowWidth; i < 2*metadataRowWidth && i < len(meta); i++ {
 				fmt.Printf("  [%3d]=%04x", i, meta[i])
-				if (i-256+1)%16 == 0 {
+				if (i-metadataRowWidth+1)%metadataPrintCols == 0 {
 					fmt.Println()
 				}
 			}
@@ -200,8 +207,8 @@ func runRevMeta() {
 			fmt.Printf("=== Frame %d (%d changes) ===\n", frameNum, changed)
 			for i := range meta {
 				if i < len(prev) && meta[i] != prev[i] {
-					row := i / 256
-					col := i % 256
+					row := i / metadataRowWidth
+					col := i % metadataRowWidth
 					fmt.Printf("  [r%d c%3d / %3d] %04x -> %04x\n", row, col, i, prev[i], meta[i])
 				}
 			}
