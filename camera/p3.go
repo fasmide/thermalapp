@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"image"
 	"log"
-	"os"
-	"strings"
 	"time"
 
 	"github.com/google/gousb"
@@ -86,8 +84,7 @@ func (c *P3Camera) Connect() error {
 
 	dev, err := c.ctx.OpenDeviceWithVIDPID(p3VID, p3PID)
 	if err != nil {
-		// Find bus/address for a helpful error message
-		hint := usbDevPath()
+		hint := usbDevPathHint(p3VID, p3PID)
 		c.ctx.Close()
 
 		return fmt.Errorf("open P3 device: %w%s", err, hint)
@@ -460,30 +457,4 @@ func trimNull(b []byte) string {
 	}
 
 	return string(b)
-}
-
-// usbDevPath scans sysfs to find the P3 camera's /dev/bus/usb path
-// without needing permissions to open the device.
-func usbDevPath() string {
-	entries, err := os.ReadDir("/sys/bus/usb/devices")
-	if err != nil {
-		return ""
-	}
-	for _, e := range entries {
-		base := "/sys/bus/usb/devices/" + e.Name()
-		vid, _ := os.ReadFile(base + "/idVendor")
-		pid, _ := os.ReadFile(base + "/idProduct")
-		if strings.TrimSpace(string(vid)) == fmt.Sprintf("%04x", p3VID) &&
-			strings.TrimSpace(string(pid)) == fmt.Sprintf("%04x", p3PID) {
-			busnum, _ := os.ReadFile(base + "/busnum")
-			devnum, _ := os.ReadFile(base + "/devnum")
-			bus := strings.TrimSpace(string(busnum))
-			dev := strings.TrimSpace(string(devnum))
-			if bus != "" && dev != "" {
-				return fmt.Sprintf("\n\nTry running:\n  sudo chown $USER /dev/bus/usb/%03s/%03s", bus, dev)
-			}
-		}
-	}
-
-	return ""
 }

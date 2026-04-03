@@ -91,3 +91,38 @@ type DeviceInfo struct {
 	Serial     string
 	HWVersion  string
 }
+
+// usbDevPathHint scans sysfs to find the USB device path for the given VID/PID
+// and returns a helpful "sudo chown" hint string. Returns empty if not found.
+func usbDevPathHint(vid, pid uint16) string {
+	entries, err := os.ReadDir("/sys/bus/usb/devices")
+	if err != nil {
+		return ""
+	}
+
+	vidStr := fmt.Sprintf("%04x", vid)
+	pidStr := fmt.Sprintf("%04x", pid)
+
+	for _, entry := range entries {
+		base := "/sys/bus/usb/devices/" + entry.Name()
+
+		devVID, _ := os.ReadFile(base + "/idVendor")
+		devPID, _ := os.ReadFile(base + "/idProduct")
+
+		if strings.TrimSpace(string(devVID)) != vidStr ||
+			strings.TrimSpace(string(devPID)) != pidStr {
+			continue
+		}
+
+		busnum, _ := os.ReadFile(base + "/busnum")
+		devnum, _ := os.ReadFile(base + "/devnum")
+		bus := strings.TrimSpace(string(busnum))
+		dev := strings.TrimSpace(string(devnum))
+
+		if bus != "" && dev != "" {
+			return fmt.Sprintf("\n\nTry running:\n  sudo chown $USER /dev/bus/usb/%03s/%03s", bus, dev)
+		}
+	}
+
+	return ""
+}
