@@ -2,7 +2,10 @@
 package camera
 
 import (
+	"fmt"
 	"image"
+	"os"
+	"strings"
 )
 
 // GainMode represents the sensor gain setting.
@@ -15,8 +18,11 @@ const (
 
 // Frame holds a decoded thermal camera frame.
 type Frame struct {
-	// Thermal contains raw uint16 temperature values (1/64 Kelvin units).
-	// Dimensions: SensorH x SensorW.
+	// Thermal contains raw uint16 thermal values.
+	// The encoding depends on the camera:
+	//   P3:   absolute temperature in 1/64 Kelvin
+	//   Seek: relative post-FFC values centered at 0x4000
+	// Use Frame.ToCelsius() for camera-agnostic conversion.
 	Thermal []uint16
 
 	// IR contains 8-bit hardware-AGC brightness values.
@@ -38,6 +44,13 @@ type Frame struct {
 	// register 64). It freezes during NUC — that is how ShutterActive is
 	// determined.
 	HardwareFrameCounter uint16
+
+	// Celsius holds per-pixel temperatures in °C, pre-computed by the camera
+	// driver. When non-nil, ToCelsiusAt returns Celsius[idx] directly without
+	// consulting Thermal[], CelsiusLUT, or the linear formula. Cameras that
+	// use non-trivial per-pixel models (e.g. Seek v5 TLUT) populate this at
+	// read time so that callers need no knowledge of the camera-specific formula.
+	Celsius []float32
 }
 
 const (
@@ -45,11 +58,31 @@ const (
 	rawThermalScale = 64.0
 	// kelvinOffset is the offset from Kelvin to Celsius.
 	kelvinOffset = 273.15
+
+	// p3CelsiusPerCount is the P3 thermal scale: 1/64 degree K per raw count.
+	p3CelsiusPerCount = 1.0 / rawThermalScale
+	// p3CelsiusBase converts the P3 zero-point from Kelvin to Celsius.
+	p3CelsiusBase = -kelvinOffset
 )
 
-// ToCelsius converts a raw uint16 thermal value to degrees Celsius.
-func ToCelsius(raw uint16) float32 {
-	return (float32(raw) / rawThermalScale) - kelvinOffset
+// ToCelsius converts a raw thermal value to degrees Celsius using the P3
+// linear formula (1/64 K per count, offset by −273.15).
+//
+// Prefer ToCelsiusAt when iterating over pixels — it returns pre-computed
+// Celsius values for cameras that populate Frame.Celsius (e.g. Seek v5).
+func (f *Frame) ToCelsius(raw uint16) float32 {
+	return float32(raw)*p3CelsiusPerCount + p3CelsiusBase
+}
+
+// ToCelsiusAt returns the temperature in °C for the pixel at index idx.
+// When Frame.Celsius is non-nil (pre-computed by the camera driver) it is
+// returned directly. Otherwise falls back to ToCelsius(Thermal[idx]).
+func (f *Frame) ToCelsiusAt(idx int) float32 {
+	if f.Celsius != nil {
+		return f.Celsius[idx]
+	}
+
+	return f.ToCelsius(f.Thermal[idx])
 }
 
 // Camera is the interface for a thermal camera device.

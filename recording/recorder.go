@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"log"
+	"math"
 	"os"
 	"sync"
 	"time"
@@ -53,7 +54,7 @@ func NewRecorder(filename string, sensorW, sensorH int) (*Recorder, error) {
 		file:         file,
 		header:       hdr,
 		start:        now,
-		rawBuf:       make([]byte, hdr.framePayloadSize()),
+		rawBuf:       make([]byte, hdr.frameMaxPayloadSize()),
 		bytesWritten: headerSize,
 	}
 
@@ -86,11 +87,16 @@ func (r *Recorder) WriteFrame(frame *camera.Frame) error {
 	binary.LittleEndian.PutUint64(r.rawBuf[off:off+8], uint64(elapsed))
 	off += 8
 
-	// Flags byte (bit 0 = ShutterActive)
+	// Flags byte — compute before writing so all bits are known upfront.
 	var flags uint8
 	if frame.ShutterActive {
-		flags |= 0x01
+		flags |= flagShutterActive
 	}
+
+	if frame.Celsius != nil {
+		flags |= flagHasCelsius
+	}
+
 	r.rawBuf[off] = flags
 	off++
 
@@ -107,6 +113,11 @@ func (r *Recorder) WriteFrame(frame *camera.Frame) error {
 	// IR data (uint8)
 	copy(r.rawBuf[off:], frame.IR)
 	off += len(frame.IR)
+
+	// Optional per-pixel Celsius plane (float32 LE) when flagHasCelsius is set.
+	if frame.Celsius != nil {
+		off = appendCelsiusPlane(r.rawBuf, off, frame.Celsius)
+	}
 
 	// Compress
 	r.compBuf.Reset()
@@ -193,4 +204,16 @@ func DumpFrame(filename string, frame *camera.Frame) error {
 	}
 
 	return rec.Close()
+}
+
+// appendCelsiusPlane encodes celsius as IEEE-754 float32 little-endian into
+// dst starting at off and returns the new offset. Used by WriteFrame to keep
+// cyclomatic complexity within bounds.
+func appendCelsiusPlane(dst []byte, off int, celsius []float32) int {
+	for _, tempC := range celsius {
+		binary.LittleEndian.PutUint32(dst[off:off+celsiusFloat32Size], math.Float32bits(tempC))
+		off += celsiusFloat32Size
+	}
+
+	return off
 }

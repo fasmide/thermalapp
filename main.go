@@ -18,19 +18,37 @@ const (
 	bytesPerMB        = 1024 * 1024 // bytes per megabyte
 	metadataRowWidth  = 256         // number of columns per metadata row (matches p3SensorW)
 	metadataPrintCols = 16          // values printed per line in metadata dumps
+
+	// Flat-field calibration defaults.
+	ffcDefaultWarmup    = 10  // frames to discard before sampling
+	ffcDefaultSmoothing = 100 // frames to average
+	ffcDefaultOutput    = "flat_field.png"
 )
 
 func main() {
 	playFile := flag.String("play", "", "play back a .tha recording file instead of connecting to camera")
 	bufSizeMB := flag.Int("bufsize", defaultBufSizeMB, "frame buffer size in megabytes for temperature history")
-	revMeta := flag.Bool("rev_meta", false, "dump frame metadata to terminal for reverse engineering")
-	revMeta2 := flag.Bool("rev_meta2", false, "compact metadata monitor: track key registers, one line per frame")
+	cameraType := flag.String("camera", "auto", "camera type: auto, p3, seek")
+	ffcFile := flag.String("ffc", "", "additional flat-field correction PNG (removes sensor gradient)")
+	createFFC := flag.Bool("create-ffc", false,
+		"create a flat-field calibration image (point camera at uniform surface)")
+	ffcOutput := flag.String("ffc-output", ffcDefaultOutput, "output filename for -create-ffc")
+	ffcWarmup := flag.Int("ffc-warmup", ffcDefaultWarmup, "warmup frames to discard for -create-ffc")
+	ffcSmoothing := flag.Int("ffc-smoothing", ffcDefaultSmoothing, "frames to average for -create-ffc")
+	revMeta := flag.Bool("rev_meta", false, "dump frame metadata to terminal for reverse engineering (P3 only)")
+	revMeta2 := flag.Bool("rev_meta2", false, "compact metadata monitor: track key registers (P3 only)")
 	flag.Parse()
 
 	bufBytes := int64(*bufSizeMB) * bytesPerMB
 
 	if *playFile != "" {
 		runPlayback(*playFile, bufBytes)
+
+		return
+	}
+
+	if *createFFC {
+		runCreateFFC(*cameraType, *ffcOutput, *ffcWarmup, *ffcSmoothing)
 
 		return
 	}
@@ -47,25 +65,101 @@ func main() {
 		return
 	}
 
-	runLive(bufBytes)
+	runLive(*cameraType, *ffcFile, bufBytes)
 }
 
-func runLive(bufBytes int64) {
-	cam := camera.NewP3Camera()
+// openCamera creates, connects, and initializes a camera based on the type string.
+// For "auto" mode, it tries Seek first, then falls back to P3.
+func openCamera(cameraType string) (camera.Camera, camera.DeviceInfo, error) {
+	switch cameraType {
+	case "p3":
+		return connectCamera(camera.NewP3Camera())
+	case "seek":
+		return connectSeekCamera()
+	case "auto":
+		return openCameraAuto()
+	default:
+		return nil, camera.DeviceInfo{}, fmt.Errorf("unknown camera type: %q (use auto, p3, or seek)", cameraType)
+	}
+}
 
-	log.Println("Connecting to P3 camera...")
-	if err := cam.Connect(); err != nil {
-		log.Fatalf("connect: %v", err)
+// connectSeekCamera creates, connects, and initializes a Seek CompactPRO camera.
+func connectSeekCamera() (camera.Camera, camera.DeviceInfo, error) {
+	seekCam := camera.NewSeekCamera()
+
+	if err := seekCam.Connect(); err != nil {
+		return nil, camera.DeviceInfo{}, fmt.Errorf("connect: %w", err)
 	}
 
-	log.Println("Initializing...")
+	info, err := seekCam.Init()
+	if err != nil {
+		seekCam.Close()
+
+		return nil, camera.DeviceInfo{}, fmt.Errorf("init: %w", err)
+	}
+
+	return seekCam, info, nil
+}
+
+// openCameraAuto tries Seek first, then falls back to P3.
+func openCameraAuto() (camera.Camera, camera.DeviceInfo, error) {
+	log.Println("Auto-detecting camera...")
+
+	seekCam := camera.NewSeekCamera()
+	if err := seekCam.Connect(); err == nil {
+		log.Println("Found Seek camera, initializing...")
+
+		info, initErr := seekCam.Init()
+		if initErr == nil {
+			return seekCam, info, nil
+		}
+
+		seekCam.Close()
+		log.Printf("Seek init failed: %v, trying P3...", initErr)
+	} else {
+		log.Printf("No Seek camera found: %v, trying P3...", err)
+	}
+
+	return connectCamera(camera.NewP3Camera())
+}
+
+// connectCamera connects and initializes a single camera.
+func connectCamera(cam camera.Camera) (camera.Camera, camera.DeviceInfo, error) {
+	if err := cam.Connect(); err != nil {
+		return nil, camera.DeviceInfo{}, fmt.Errorf("connect: %w", err)
+	}
+
 	info, err := cam.Init()
 	if err != nil {
 		cam.Close()
-		log.Fatalf("init: %v", err)
+
+		return nil, camera.DeviceInfo{}, fmt.Errorf("init: %w", err)
 	}
+
+	return cam, info, nil
+}
+
+func runLive(cameraType, ffcFile string, bufBytes int64) {
+	cam, info, err := openCamera(cameraType)
+	if err != nil {
+		log.Fatalf("camera: %v", err)
+	}
+
 	log.Printf("Camera: %s  FW: %s  HW: %s  Serial: %s",
 		info.Model, info.FWVersion, info.HWVersion, info.Serial)
+
+	// Load optional additional flat-field correction.
+	var ffc *camera.FlatFieldCorrector
+
+	if ffcFile != "" {
+		ffc, err = camera.LoadFlatField(ffcFile)
+		if err != nil {
+			cam.Close()
+			log.Fatalf("load flat-field: %v", err)
+		}
+
+		log.Printf("Loaded additional flat-field correction from %s", ffcFile)
+	}
 
 	log.Println("Starting stream...")
 	if err := cam.StartStreaming(); err != nil {
@@ -74,17 +168,24 @@ func runLive(bufBytes int64) {
 	}
 	defer cam.Close()
 
-	uiApp := ui.NewApp(cam, bufBytes)
+	uiApp := ui.NewApp(cam, info.Model, bufBytes)
 
 	// USB reader goroutine
 	go func() {
 		for {
-			frame, err := cam.ReadFrame()
-			if err != nil {
-				log.Printf("read frame: %v", err)
+			frame, readErr := cam.ReadFrame()
+			if readErr != nil {
+				log.Printf("read frame: %v", readErr)
 
 				continue
 			}
+
+			if ffc != nil {
+				if ffcErr := ffc.Apply(frame); ffcErr != nil {
+					log.Printf("apply flat-field: %v", ffcErr)
+				}
+			}
+
 			uiApp.UpdateFrame(frame)
 		}
 	}()
@@ -100,6 +201,64 @@ func runLive(bufBytes int64) {
 	app.Main()
 }
 
+// runCreateFFC creates a flat-field calibration image by averaging corrected
+// frames while the camera is pointed at a uniform surface.
+func runCreateFFC(cameraType, output string, warmup, smoothing int) {
+	cam, info, err := openCamera(cameraType)
+	if err != nil {
+		log.Fatalf("camera: %v", err)
+	}
+
+	log.Printf("Camera: %s — creating flat-field calibration image", info.Model)
+
+	if err := cam.StartStreaming(); err != nil {
+		cam.Close()
+		log.Fatalf("start streaming: %v", err)
+	}
+
+	size := cam.SensorSize()
+	log.Printf("Sensor: %dx%d, warming up %d frames...", size.X, size.Y, warmup)
+
+	// Warmup: discard initial frames so the sensor stabilizes.
+	for idx := range warmup {
+		if _, warmErr := cam.ReadFrame(); warmErr != nil {
+			log.Printf("warmup frame %d: %v", idx+1, warmErr)
+		}
+	}
+
+	log.Printf("Warmup complete. Averaging %d frames (keep camera pointed at uniform surface)...", smoothing)
+
+	acc := camera.NewFlatFieldAccumulator(size.X, size.Y)
+
+	for acc.Count() < smoothing {
+		frame, readErr := cam.ReadFrame()
+		if readErr != nil {
+			log.Printf("frame read: %v", readErr)
+
+			continue
+		}
+
+		if addErr := acc.Add(frame); addErr != nil {
+			log.Printf("accumulate frame: %v", addErr)
+
+			continue
+		}
+
+		if acc.Count()%10 == 0 { //nolint:mnd // progress indicator at round numbers
+			log.Printf("  collected %d / %d frames", acc.Count(), smoothing)
+		}
+	}
+
+	cam.Close()
+
+	if err := acc.Save(output); err != nil {
+		log.Fatalf("save flat-field: %v", err)
+	}
+
+	log.Printf("Flat-field calibration saved to %s", output)
+	log.Printf("Use with: -ffc %s", output)
+}
+
 func runPlayback(filename string, bufBytes int64) {
 	player, err := recording.NewPlayer(filename)
 	if err != nil {
@@ -110,7 +269,7 @@ func runPlayback(filename string, bufBytes int64) {
 	h := player.Header()
 	log.Printf("Playing %s: %dx%d, %d frames", filename, h.Width, h.Height, h.FrameCount)
 
-	uiApp := ui.NewApp(player, bufBytes)
+	uiApp := ui.NewApp(player, "Playback", bufBytes)
 	uiApp.SetPlayer(player)
 
 	// Frame reader goroutine (respects original timing)

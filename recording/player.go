@@ -8,6 +8,7 @@ import (
 	"image"
 	"io"
 	"log"
+	"math"
 	"os"
 	"sync"
 	"syscall"
@@ -59,7 +60,7 @@ func NewPlayer(filename string) (*Player, error) {
 	player := &Player{
 		file:      file,
 		header:    hdr,
-		frameBuf:  make([]byte, hdr.framePayloadSize()),
+		frameBuf:  make([]byte, hdr.frameMaxPayloadSize()),
 		firstRead: true,
 	}
 
@@ -374,11 +375,9 @@ func (p *Player) parseFrameData() *camera.Frame {
 	height := int(p.header.Height)
 	off := timestampSize
 
-	// Flags byte
 	flags := p.frameBuf[off]
 	off++
 
-	// HardwareFrameCounter
 	hwFrameCnt := binary.LittleEndian.Uint16(p.frameBuf[off : off+2])
 	off += 2
 
@@ -389,17 +388,24 @@ func (p *Player) parseFrameData() *camera.Frame {
 		off += 2
 	}
 
-	ir := make([]uint8, width*height)
-	copy(ir, p.frameBuf[off:off+width*height])
+	irData := make([]uint8, thermalCount)
+	copy(irData, p.frameBuf[off:off+thermalCount])
+	off += thermalCount
 
-	return &camera.Frame{
+	frame := &camera.Frame{
 		Thermal:              thermal,
-		IR:                   ir,
+		IR:                   irData,
 		Width:                width,
 		Height:               height,
-		ShutterActive:        flags&0x01 != 0,
+		ShutterActive:        flags&flagShutterActive != 0,
 		HardwareFrameCounter: hwFrameCnt,
 	}
+
+	if flags&flagHasCelsius != 0 {
+		frame.Celsius = parseCelsiusPlane(p.frameBuf, off, thermalCount)
+	}
+
+	return frame
 }
 
 // ReadFrameAt reads a specific frame by index independently of playback state.
@@ -427,11 +433,10 @@ func (p *Player) ReadFrameAt(idx int) (*camera.Frame, time.Time, error) {
 	}
 	compressed := mmap[dataStart:dataEnd]
 
-	payloadSize := p.header.framePayloadSize()
 	width, height := int(p.header.Width), int(p.header.Height)
 
 	// Decompress (the expensive part — runs without any lock)
-	buf := make([]byte, payloadSize)
+	buf := make([]byte, p.header.frameMaxPayloadSize())
 	decompReader := flate.NewReader(bytes.NewReader(compressed))
 	bytesRead, err := io.ReadFull(decompReader, buf)
 	decompReader.Close()
@@ -448,20 +453,42 @@ func (p *Player) ReadFrameAt(idx int) (*camera.Frame, time.Time, error) {
 	hwFC := binary.LittleEndian.Uint16(buf[foff : foff+2])
 	foff += 2
 
-	thermal := make([]uint16, width*height)
+	pixelCount := width * height
+	thermal := make([]uint16, pixelCount)
 	for i := range thermal {
 		thermal[i] = binary.LittleEndian.Uint16(buf[foff : foff+2])
 		foff += 2
 	}
-	ir := make([]uint8, width*height)
-	copy(ir, buf[foff:foff+width*height])
+	irData := make([]uint8, pixelCount)
+	copy(irData, buf[foff:foff+pixelCount])
+	foff += pixelCount
 
-	return &camera.Frame{
+	frame := &camera.Frame{
 		Thermal:              thermal,
-		IR:                   ir,
+		IR:                   irData,
 		Width:                width,
 		Height:               height,
-		ShutterActive:        flags&0x01 != 0,
+		ShutterActive:        flags&flagShutterActive != 0,
 		HardwareFrameCounter: hwFC,
-	}, frameTime, nil
+	}
+
+	if flags&flagHasCelsius != 0 {
+		frame.Celsius = parseCelsiusPlane(buf, foff, pixelCount)
+	}
+
+	return frame, frameTime, nil
+}
+
+// parseCelsiusPlane decodes pixelCount IEEE-754 float32 little-endian values
+// from buf starting at off and returns the decoded slice. Used by parseFrameData
+// and ReadFrameAt to keep cyclomatic complexity within bounds.
+func parseCelsiusPlane(buf []byte, off, pixelCount int) []float32 {
+	celsius := make([]float32, pixelCount)
+
+	for i := range pixelCount {
+		celsius[i] = math.Float32frombits(binary.LittleEndian.Uint32(buf[off : off+celsiusFloat32Size]))
+		off += celsiusFloat32Size
+	}
+
+	return celsius
 }

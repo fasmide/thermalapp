@@ -102,8 +102,8 @@ func Colorize(frame *camera.Frame, params Params) *Result {
 	// Convert thermal data to celsius
 	count := len(frame.Thermal)
 	celsius := make([]float32, count)
-	for idx, raw := range frame.Thermal {
-		celsius[idx] = camera.ToCelsius(raw)
+	for idx := range frame.Thermal {
+		celsius[idx] = frame.ToCelsiusAt(idx)
 	}
 
 	applyGlobalEmissivity(celsius, params.Emissivity, result)
@@ -155,8 +155,8 @@ func colorizeHardwareMode(frame *camera.Frame, params Params, lut *[256][3]uint8
 	}
 
 	result.Celsius = make([]float32, len(frame.Thermal))
-	for idx, raw := range frame.Thermal {
-		result.Celsius[idx] = camera.ToCelsius(raw)
+	for idx := range frame.Thermal {
+		result.Celsius[idx] = frame.ToCelsiusAt(idx)
 	}
 
 	applyGlobalEmissivity(result.Celsius, params.Emissivity, result)

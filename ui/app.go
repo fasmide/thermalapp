@@ -110,8 +110,9 @@ type spotSnap struct {
 
 // App holds the UI and shared state.
 type App struct {
-	Window *app.Window
-	theme  *material.Theme
+	Window    *app.Window
+	theme     *material.Theme
+	modelName string // camera model name for window title
 
 	mu     sync.Mutex
 	result *colorize.Result
@@ -189,19 +190,25 @@ type App struct {
 	playBuf *PlaybackBuffer
 }
 
-func NewApp(cam camera.Camera, bufSize int64) *App {
+func NewApp(cam camera.Camera, modelName string, bufSize int64) *App {
 	size := cam.SensorSize()
 	var win app.Window
-	title := "P3 Thermal"
+
+	title := modelName
+	if title == "" {
+		title = "Thermal"
+	}
+
 	win.Option(
 		app.Title(title),
 		app.Size(unit.Dp(float32(size.X*windowScaleFactor)), unit.Dp(float32(size.Y*windowScaleFactor+windowHeightPadDp))),
 	)
 
 	return &App{
-		Window: &win,
-		theme:  material.NewTheme(),
-		cam:    cam,
+		Window:    &win,
+		theme:     material.NewTheme(),
+		modelName: title,
+		cam:       cam,
 		params: colorize.Params{
 			Mode:       colorize.AGCPercentile,
 			Palette:    colorize.PaletteInferno,
@@ -227,7 +234,7 @@ func (a *App) SetPlayer(p *recording.Player) {
 	a.player = p
 	h := p.Header()
 	a.playBuf = NewPlaybackBuffer(int(h.Width), int(h.Height), int(p.FrameCount()), a.frameBuf.maxBytes)
-	a.Window.Option(app.Title(fmt.Sprintf("P3 Thermal — Playback (%d frames)", p.FrameCount())))
+	a.Window.Option(app.Title(fmt.Sprintf("%s — Playback (%d frames)", a.modelName, p.FrameCount())))
 }
 
 // updateBuffer adds the colorized celsius frame to the appropriate ring or

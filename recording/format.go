@@ -12,13 +12,14 @@
 //	  [26:32] Reserved (zero)
 //
 //	Per frame (deflate compressed):
-//	  [0:4]   CompressedSize uint32 LE
-//	  [4:4+N] Deflate-compressed block containing:
-//	          [0:8]                TimestampNs int64 LE (nanos since recording start)
-//	          [8]                  Flags uint8 (bit 0 = ShutterActive)
-//	          [9:11]              HardwareFrameCounter uint16 LE
-//	          [11:11+W*H*2]       Thermal []uint16 LE
-//	          [11+W*H*2:11+W*H*3] IR []uint8
+//	  [0:4]                  CompressedSize uint32 LE
+//	  [4:4+N]                Deflate-compressed block containing:
+//	    [0:8]                  TimestampNs int64 LE (nanos since recording start)
+//	    [8]                    Flags uint8 (bit 0 = ShutterActive, bit 1 = HasCelsius)
+//	    [9:11]                 HardwareFrameCounter uint16 LE
+//	    [11:11+W*H*2]          Thermal []uint16 LE
+//	    [11+W*H*2:11+W*H*3]   IR []uint8
+//	    [11+W*H*3:11+W*H*7]   Celsius []float32 LE (only when HasCelsius flag set)
 package recording
 
 import (
@@ -37,6 +38,11 @@ const (
 	frameMetaSize      = 3 // 1 byte flags + 2 bytes HardwareFrameCounter
 	frameSizePrefixLen = 4
 	uint16ByteSize     = 2 // bytes per uint16 sample in the thermal frame
+	celsiusFloat32Size = 4 // bytes per float32 sample in the celsius plane
+
+	// Frame flags (Flags byte, offset 8 within uncompressed payload).
+	flagShutterActive uint8 = 0x01 // bit 0: shutter closed during this frame
+	flagHasCelsius    uint8 = 0x02 // bit 1: per-pixel Celsius plane appended after IR
 )
 
 // Header is the file header.
@@ -59,6 +65,15 @@ func (h Header) frameDataSize() int {
 // framePayloadSize returns the uncompressed frame size including timestamp and frame metadata.
 func (h Header) framePayloadSize() int {
 	return timestampSize + frameMetaSize + h.frameDataSize()
+}
+
+// frameMaxPayloadSize returns the maximum uncompressed frame size, including
+// the optional per-pixel Celsius plane (flagHasCelsius). Use this to size
+// read/write buffers so they can accommodate both plain and Celsius-extended frames.
+func (h Header) frameMaxPayloadSize() int {
+	w, ht := int(h.Width), int(h.Height)
+
+	return h.framePayloadSize() + w*ht*celsiusFloat32Size
 }
 
 func writeHeader(out io.Writer, hdr Header) error {
