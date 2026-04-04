@@ -2,6 +2,7 @@ package camera
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
 	"image"
 	"log"
@@ -45,8 +46,92 @@ const (
 	startStreamDelay2 = 2 * time.Second // delay after sending 0xEE before bulk read
 
 	// Frame boundary markers.
-	markerCount = 2 // number of start/end markers surrounding each frame
+	markerCount = 2  // number of start/end markers surrounding each frame
+	markerSize  = 12 // bytes per frame marker
+
+	// P3 sensor dimensions.
+	p3SensorW = 256
+	p3SensorH = 192
+
+	// uint16ByteSize is the number of bytes per raw pixel sample.
+	uint16ByteSize = 2
+
+	// Frame layout: 192 IR rows + 2 metadata rows + 192 thermal rows = 386 total
+	p3MetaRows  = 2 // number of metadata rows between IR and thermal data
+	p3FrameRows = 2*p3SensorH + p3MetaRows
+	// p3FrameSize is the frame data size in bytes (excluding markers).
+	p3FrameSize = uint16ByteSize * p3FrameRows * p3SensorW // 197,632
+
+	// Temperature conversion constants for the P3 sensor (1/64 K per raw count).
+	p3RawThermalScale = 64.0
+	p3CelsiusPerCount = 1.0 / p3RawThermalScale
+	p3CelsiusBase     = -kelvinOffset
+
+	// p3MetaCount is the number of uint16 values in the metadata rows.
+	p3MetaCount = uint16ByteSize * p3SensorW // 2 rows × 256 cols
 )
+
+// frameMarker represents the 12-byte start/end frame marker sent by the P3.
+type frameMarker struct {
+	Length uint8
+	Sync   uint8
+	Cnt1   uint32
+	Cnt2   uint32
+	Cnt3   uint16
+}
+
+func parseMarker(data []byte) frameMarker {
+	return frameMarker{
+		Length: data[0],
+		Sync:   data[1],
+		Cnt1:   binary.LittleEndian.Uint32(data[2:6]),
+		Cnt2:   binary.LittleEndian.Uint32(data[6:10]),
+		Cnt3:   binary.LittleEndian.Uint16(data[10:12]),
+	}
+}
+
+// parseP3Frame parses raw USB frame data (start marker + pixel data) into its
+// component planes. Input must be at least markerSize + p3FrameSize bytes.
+//
+// Returns:
+//   - ir:       8-bit hardware-AGC brightness, one value per pixel
+//   - thermal:  raw uint16 thermal counts (1/64 K per LSB, absolute kelvin)
+//   - metadata: raw uint16 metadata registers (2 rows × 256 columns)
+func parseP3Frame(data []byte) (ir []uint8, thermal []uint16, metadata []uint16, err error) {
+	expected := markerSize + p3FrameSize
+	if len(data) < expected {
+		return nil, nil, nil, fmt.Errorf("frame too short: got %d, want %d", len(data), expected)
+	}
+
+	// Skip the 12-byte start marker; interpret pixel data as uint16 LE.
+	pixels := data[markerSize : markerSize+p3FrameSize]
+
+	pixelCount := p3SensorH * p3SensorW
+
+	// IR brightness: rows 0..191, low byte of each uint16.
+	ir = make([]uint8, pixelCount)
+	for i := range pixelCount {
+		ir[i] = pixels[i*uint16ByteSize]
+	}
+
+	// Metadata: rows 192..193 (2 rows × 256 cols × 2 bytes).
+	metaOffset := p3SensorH * p3SensorW * uint16ByteSize
+	metadata = make([]uint16, p3MetaCount)
+	for i := range p3MetaCount {
+		off := metaOffset + i*uint16ByteSize
+		metadata[i] = binary.LittleEndian.Uint16(pixels[off : off+uint16ByteSize])
+	}
+
+	// Thermal data: rows 194..385.
+	thermalOffset := (p3SensorH + p3MetaRows) * p3SensorW * uint16ByteSize
+	thermal = make([]uint16, pixelCount)
+	for i := range pixelCount {
+		off := thermalOffset + i*uint16ByteSize
+		thermal[i] = binary.LittleEndian.Uint16(pixels[off : off+uint16ByteSize])
+	}
+
+	return ir, thermal, metadata, nil
+}
 
 // P3Camera drives the Thermal Master P3 USB thermal camera.
 type P3Camera struct {
@@ -249,15 +334,15 @@ func (c *P3Camera) StartStreaming() error {
 	return nil
 }
 
-// updateShutterState updates frame.ShutterActive and frame.HardwareFrameCounter
-// based on metadata register 64, and advances the camera's prevFrameCnt.
-func (c *P3Camera) updateShutterState(frame *Frame) {
-	if len(frame.Metadata) <= metadataMaxIdx {
+// updateShutterState sets frame.ShutterActive based on metadata register 64
+// (the camera's hardware frame counter). When the counter stops incrementing
+// the shutter is closed and NUC calibration is in progress.
+func (c *P3Camera) updateShutterState(frame *Frame, metadata []uint16) {
+	if len(metadata) <= metadataMaxIdx {
 		return
 	}
 
-	frameCnt := frame.Metadata[metadataMaxIdx]
-	frame.HardwareFrameCounter = frameCnt
+	frameCnt := metadata[metadataMaxIdx]
 
 	if c.firstFrame {
 		c.firstFrame = false
@@ -313,14 +398,46 @@ func (c *P3Camera) ReadFrame() (*Frame, error) {
 		log.Printf("marker cnt1 mismatch: start=%d end=%d", startMarker.Cnt1, endMarker.Cnt1)
 	}
 
-	frame, err := ParseP3Frame(c.frameBuf[:markerSize+p3FrameSize])
+	irPlane, thermal, metadata, err := parseP3Frame(c.frameBuf[:markerSize+p3FrameSize])
 	if err != nil {
 		return nil, err
 	}
 
-	c.updateShutterState(frame)
+	// Convert raw thermal counts (1/64 K per LSB) to degrees Celsius.
+	celsius := make([]float32, len(thermal))
+	for i, raw := range thermal {
+		celsius[i] = float32(raw)*p3CelsiusPerCount + p3CelsiusBase
+	}
+
+	frame := &Frame{
+		Width:   p3SensorW,
+		Height:  p3SensorH,
+		IR:      irPlane,
+		Celsius: celsius,
+	}
+
+	c.updateShutterState(frame, metadata)
 
 	return frame, nil
+}
+
+// ReadMetadata reads one raw frame and returns the two metadata rows
+// (2 × 256 uint16 values) without computing temperatures. Intended for
+// P3-specific debugging and register reverse-engineering.
+func (c *P3Camera) ReadMetadata() ([]uint16, error) {
+	if !c.streaming || c.ep == nil {
+		return nil, fmt.Errorf("not streaming")
+	}
+
+	totalSize := p3FrameSize + markerCount*markerSize
+
+	if err := c.readBulkFrame(totalSize); err != nil {
+		return nil, err
+	}
+
+	_, _, metadata, err := parseP3Frame(c.frameBuf[:markerSize+p3FrameSize])
+
+	return metadata, err
 }
 
 func (c *P3Camera) StopStreaming() error {

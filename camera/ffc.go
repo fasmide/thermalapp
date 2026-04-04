@@ -1,38 +1,40 @@
 package camera
 
 import (
+	"encoding/binary"
 	"fmt"
 	"image"
 	"image/color"
 	"image/png"
+	"io"
 	"math"
 	"os"
 )
 
-// Additional FFC (flat-field correction) constants.
-const (
-	// ffcBias is added before subtracting the FFC image so the result stays
-	// positive for typical sensor values.  Matches the reference C++ code.
-	ffcBias = 0x4000
+// ffcFileHeaderSize is the total byte size of the .ffc binary file header.
+const ffcFileHeaderSize = 12
 
-	// irNormMax is the maximum 8-bit value for IR normalization.
-	irNormMax = 255
-)
+// ffcFileMagic identifies flat-field correction files produced by this application.
+var ffcFileMagic = [8]byte{'T', 'H', 'A', 'F', 'F', '1', 0, 0}
 
-// FlatFieldCorrector applies an additional flat-field correction image to
-// every frame.  This removes fixed-pattern sensor gradient / vignetting
-// that the per-frame shutter FFC cannot eliminate.
+// irNormMax is the maximum 8-bit value for IR normalization.
+const irNormMax = 255
+
+// FlatFieldCorrector applies a per-pixel temperature correction to every frame.
+// The correction removes fixed-pattern sensor gradients and vignetting that
+// the per-frame shutter FFC cannot eliminate.
 //
-// The correction is: thermal[i] += ffcBias - ffc[i]
+// The correction is loaded from a .ffc binary file produced by FlatFieldAccumulator.
+// For each pixel: celsius_corrected[i] = celsius[i] + correction[i].
 //
 // It is camera-agnostic: any Camera implementation can benefit.
 type FlatFieldCorrector struct {
-	ffc    []uint16 // correction image (same dimensions as frame)
-	width  int
-	height int
+	correction []float32 // per-pixel additive correction in °C (global_mean − per_pixel_avg)
+	width      int
+	height     int
 }
 
-// LoadFlatField reads a 16-bit grayscale PNG and returns a FlatFieldCorrector.
+// LoadFlatField reads a .ffc binary file and returns a FlatFieldCorrector.
 func LoadFlatField(path string) (*FlatFieldCorrector, error) {
 	file, err := os.Open(path)
 	if err != nil {
@@ -40,35 +42,38 @@ func LoadFlatField(path string) (*FlatFieldCorrector, error) {
 	}
 	defer file.Close()
 
-	img, err := png.Decode(file)
-	if err != nil {
-		return nil, fmt.Errorf("decode flat-field PNG: %w", err)
+	var hdr [ffcFileHeaderSize]byte
+	if _, err := io.ReadFull(file, hdr[:]); err != nil {
+		return nil, fmt.Errorf("read flat-field header: %w", err)
 	}
 
-	bounds := img.Bounds()
-	width := bounds.Dx()
-	height := bounds.Dy()
-	count := width * height
-	ffc := make([]uint16, count)
+	if [8]byte(hdr[:8]) != ffcFileMagic {
+		return nil, fmt.Errorf("not a .ffc file (bad magic)")
+	}
 
-	for row := range height {
-		for col := range width {
-			r, _, _, _ := img.At(col+bounds.Min.X, row+bounds.Min.Y).RGBA()
-			// color.RGBA returns pre-multiplied 16-bit values; for Gray16
-			// the red channel equals the gray value.
-			ffc[row*width+col] = uint16(r)
+	width := int(binary.LittleEndian.Uint16(hdr[8:10]))
+	height := int(binary.LittleEndian.Uint16(hdr[10:12]))
+	count := width * height
+	correction := make([]float32, count)
+
+	for pixIdx := range count {
+		var bits [4]byte
+		if _, err := io.ReadFull(file, bits[:]); err != nil {
+			return nil, fmt.Errorf("read flat-field pixel %d: %w", pixIdx, err)
 		}
+
+		correction[pixIdx] = math.Float32frombits(binary.LittleEndian.Uint32(bits[:]))
 	}
 
 	return &FlatFieldCorrector{
-		ffc:    ffc,
-		width:  width,
-		height: height,
+		correction: correction,
+		width:      width,
+		height:     height,
 	}, nil
 }
 
-// Apply corrects a frame in-place: thermal[i] += ffcBias - ffc[i].
-// The IR plane is regenerated from the corrected thermal values.
+// Apply corrects a frame in-place: celsius[i] += correction[i].
+// The IR plane is regenerated from the corrected Celsius values.
 // Returns an error if the frame dimensions do not match.
 func (f *FlatFieldCorrector) Apply(frame *Frame) error {
 	if frame.Width != f.width || frame.Height != f.height {
@@ -76,37 +81,35 @@ func (f *FlatFieldCorrector) Apply(frame *Frame) error {
 			f.width, f.height, frame.Width, frame.Height)
 	}
 
-	count := len(frame.Thermal)
-	if count != len(f.ffc) {
+	if len(frame.Celsius) != len(f.correction) {
 		return fmt.Errorf("flat-field pixel count %d does not match frame %d",
-			len(f.ffc), count)
+			len(f.correction), len(frame.Celsius))
 	}
 
-	for idx := range count {
-		val := int(frame.Thermal[idx]) + ffcBias - int(f.ffc[idx])
-		if val < 0 {
-			val = 0
-		} else if val > math.MaxUint16 {
-			val = math.MaxUint16
-		}
-
-		frame.Thermal[idx] = uint16(val)
+	for i := range frame.Celsius {
+		frame.Celsius[i] += f.correction[i]
 	}
 
-	// Regenerate IR from corrected thermal.
-	frame.IR = linearStretchIR(frame.Thermal)
+	// Regenerate IR from corrected Celsius.
+	frame.IR = linearStretchIR(frame.Celsius)
 
 	return nil
 }
 
-// linearStretchIR converts 16-bit thermal to 8-bit IR via min/max linear stretch.
-func linearStretchIR(thermal []uint16) []uint8 {
-	count := len(thermal)
+// linearStretchIR converts a float32 Celsius slice to 8-bit IR via min/max
+// linear stretch. Monotonic in temperature, so the result is equivalent to
+// stretching raw thermal counts.
+func linearStretchIR(celsius []float32) []uint8 {
+	count := len(celsius)
 	result := make([]uint8, count)
 
-	var tMin, tMax uint16 = math.MaxUint16, 0
+	if count == 0 {
+		return result
+	}
 
-	for _, val := range thermal {
+	tMin, tMax := celsius[0], celsius[0]
+
+	for _, val := range celsius {
 		if val < tMin {
 			tMin = val
 		}
@@ -120,10 +123,10 @@ func linearStretchIR(thermal []uint16) []uint8 {
 		return result
 	}
 
-	span := float64(tMax) - float64(tMin)
+	span := tMax - tMin
 
-	for idx, val := range thermal {
-		norm := (float64(val) - float64(tMin)) / span
+	for idx, val := range celsius {
+		norm := (val - tMin) / span
 		if norm < 0 {
 			norm = 0
 		} else if norm > 1 {
@@ -136,10 +139,11 @@ func linearStretchIR(thermal []uint16) []uint8 {
 	return result
 }
 
-// FlatFieldAccumulator collects corrected frames and produces an averaged
-// flat-field calibration image.
+// FlatFieldAccumulator collects frames and produces an averaged flat-field
+// calibration file. Point the camera at a spatially uniform surface (e.g.
+// a wall, clear sky, or blackbody source) while accumulating.
 type FlatFieldAccumulator struct {
-	sum    []float64 // running sum of thermal values
+	sum    []float64 // running sum of per-pixel Celsius values
 	count  int       // number of frames accumulated
 	width  int
 	height int
@@ -154,14 +158,14 @@ func NewFlatFieldAccumulator(width, height int) *FlatFieldAccumulator {
 	}
 }
 
-// Add accumulates one frame's thermal data.
+// Add accumulates one frame's Celsius data.
 func (a *FlatFieldAccumulator) Add(frame *Frame) error {
 	if frame.Width != a.width || frame.Height != a.height {
 		return fmt.Errorf("frame size %dx%d does not match accumulator %dx%d",
 			frame.Width, frame.Height, a.width, a.height)
 	}
 
-	for idx, val := range frame.Thermal {
+	for idx, val := range frame.Celsius {
 		a.sum[idx] += float64(val)
 	}
 
@@ -175,39 +179,111 @@ func (a *FlatFieldAccumulator) Count() int {
 	return a.count
 }
 
-// Save writes the averaged flat-field image as a 16-bit grayscale PNG.
+// Save writes the flat-field correction to a .ffc binary file.
+// The correction stored per pixel is global_mean − per_pixel_avg, so that
+// applying it (adding) centres all pixels at the same temperature.
+// A 16-bit grayscale PNG preview is also written alongside (same path + ".png").
 func (a *FlatFieldAccumulator) Save(path string) error {
 	if a.count == 0 {
 		return fmt.Errorf("no frames accumulated")
 	}
 
-	img := image.NewGray16(image.Rect(0, 0, a.width, a.height))
-
+	count := a.width * a.height
 	divisor := float64(a.count)
+
+	avg := make([]float64, count)
+	globalSum := 0.0
+
+	for i, s := range a.sum {
+		avg[i] = s / divisor
+		globalSum += avg[i]
+	}
+
+	globalMean := globalSum / float64(count)
+
+	// Build correction: for each pixel, how much to add to reach the global mean.
+	correction := make([]float32, count)
+	for i := range count {
+		correction[i] = float32(globalMean - avg[i])
+	}
+
+	if err := a.writeFFCFile(path, correction); err != nil {
+		return err
+	}
+
+	return a.writePNGPreview(path+".png", avg)
+}
+
+// writeFFCFile writes the binary .ffc correction file.
+func (a *FlatFieldAccumulator) writeFFCFile(path string, correction []float32) error {
+	file, err := os.Create(path)
+	if err != nil {
+		return fmt.Errorf("create .ffc file: %w", err)
+	}
+	defer file.Close()
+
+	var hdr [ffcFileHeaderSize]byte
+	copy(hdr[:8], ffcFileMagic[:])
+	binary.LittleEndian.PutUint16(hdr[8:10], uint16(a.width))   //nolint:gosec // dimensions fit uint16
+	binary.LittleEndian.PutUint16(hdr[10:12], uint16(a.height)) //nolint:gosec
+
+	if _, err := file.Write(hdr[:]); err != nil {
+		return fmt.Errorf("write .ffc header: %w", err)
+	}
+
+	for _, c := range correction {
+		var bits [4]byte
+		binary.LittleEndian.PutUint32(bits[:], math.Float32bits(c))
+
+		if _, err := file.Write(bits[:]); err != nil {
+			return fmt.Errorf("write .ffc pixel: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// writePNGPreview writes a 16-bit grayscale PNG for human inspection.
+// The average temperatures are scaled into the uint16 range for display.
+func (a *FlatFieldAccumulator) writePNGPreview(path string, avg []float64) error {
+	// Find min/max of averages for scaling.
+	tMin, tMax := avg[0], avg[0]
+
+	for _, val := range avg {
+		if val < tMin {
+			tMin = val
+		}
+
+		if val > tMax {
+			tMax = val
+		}
+	}
+
+	span := tMax - tMin
+	img := image.NewGray16(image.Rect(0, 0, a.width, a.height))
 
 	for row := range a.height {
 		for col := range a.width {
 			idx := row*a.width + col
-			avg := a.sum[idx] / divisor
+			var scaled uint16
 
-			if avg < 0 {
-				avg = 0
-			} else if avg > math.MaxUint16 {
-				avg = math.MaxUint16
+			if span > 0 {
+				norm := (avg[idx] - tMin) / span
+				scaled = uint16(norm * math.MaxUint16) //nolint:gosec // norm is in [0,1]
 			}
 
-			img.SetGray16(col, row, color.Gray16{Y: uint16(avg)})
+			img.SetGray16(col, row, color.Gray16{Y: scaled})
 		}
 	}
 
 	file, err := os.Create(path)
 	if err != nil {
-		return fmt.Errorf("create output file: %w", err)
+		return fmt.Errorf("create PNG preview: %w", err)
 	}
 	defer file.Close()
 
 	if err := png.Encode(file, img); err != nil {
-		return fmt.Errorf("encode PNG: %w", err)
+		return fmt.Errorf("encode PNG preview: %w", err)
 	}
 
 	return nil

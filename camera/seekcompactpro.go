@@ -948,11 +948,10 @@ func (c *SeekCamera) calcNeighborMean(img []uint16, pixX, pixY int) uint16 {
 // ReadFrame reads one frame from the Seek camera, applies FFC and dead pixel
 // correction, and returns the processed frame.
 //
-// For v5 cameras (factory cal version 5), Frame.Celsius is populated with
-// per-pixel absolute temperatures derived from the pre-FFC raw pixels via the
-// linear TLUT model. Dead pixels are corrected in the raw domain first so that
-// no spuriously cold/hot stuck pixels appear in the temperature output.
-// Frame.Thermal holds FFC-corrected values for display / AGC use.
+// Frame.Celsius is populated with per-pixel absolute temperatures derived from
+// the pre-FFC raw pixels via the v5 TLUT model. Dead pixels are corrected in
+// the raw domain first so that no spuriously cold/hot stuck pixels appear in
+// the temperature output.
 func (c *SeekCamera) ReadFrame() (*Frame, error) {
 	if !c.streaming {
 		return nil, fmt.Errorf("not streaming")
@@ -984,31 +983,27 @@ func (c *SeekCamera) ReadFrame() (*Frame, error) {
 	}
 
 	frame := &Frame{
-		Thermal: corrected,
-		Width:   seekImageW,
-		Height:  seekImageH,
+		Width:  seekImageW,
+		Height: seekImageH,
 	}
 
-	if c.celsiusLUT != nil {
-		// Dead pixels in the raw ROI have invalid values (e.g. 0) that would
-		// produce spuriously cold stuck pixels via the LUT. Correct them in
-		// the raw domain first, using the same neighbour-mean filter used for
-		// the FFC-corrected display path.
-		cleanROI := roi
-		if len(c.deadPixelOrder) > 0 {
-			cleanROI = c.applyDeadPixelFilter(roi)
-		}
-
-		// Pre-compute per-pixel Celsius from the dead-pixel-corrected raw
-		// pixels using the v5 TLUT. cleanROI stays local — no camera-specific
-		// fields leak into Frame.
-		celsius := make([]float32, len(cleanROI))
-		for idx, raw := range cleanROI {
-			celsius[idx] = c.celsiusLUT[raw]
-		}
-
-		frame.Celsius = celsius
+	// Dead pixels in the raw ROI have invalid values (e.g. 0) that would
+	// produce spuriously cold stuck pixels via the LUT. Correct them in
+	// the raw domain first, using the same neighbour-mean filter used for
+	// the FFC-corrected display path.
+	cleanROI := roi
+	if len(c.deadPixelOrder) > 0 {
+		cleanROI = c.applyDeadPixelFilter(roi)
 	}
+
+	// Pre-compute per-pixel Celsius from the dead-pixel-corrected raw
+	// pixels using the v5 TLUT.
+	celsius := make([]float32, len(cleanROI))
+	for idx, raw := range cleanROI {
+		celsius[idx] = c.celsiusLUT[raw]
+	}
+
+	frame.Celsius = celsius
 
 	// Generate 8-bit IR plane from the corrected thermal data for hardware-AGC mode.
 	frame.IR = c.thermalToIR(corrected)

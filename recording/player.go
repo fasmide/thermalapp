@@ -378,34 +378,20 @@ func (p *Player) parseFrameData() *camera.Frame {
 	flags := p.frameBuf[off]
 	off++
 
-	hwFrameCnt := binary.LittleEndian.Uint16(p.frameBuf[off : off+2])
-	off += 2
+	pixelCount := width * height
+	celsius := parseCelsiusPlane(p.frameBuf, off, pixelCount)
+	off += pixelCount * celsiusFloat32Size
 
-	thermalCount := width * height
-	thermal := make([]uint16, thermalCount)
-	for i := range thermalCount {
-		thermal[i] = binary.LittleEndian.Uint16(p.frameBuf[off : off+2])
-		off += 2
+	irData := make([]uint8, pixelCount)
+	copy(irData, p.frameBuf[off:off+pixelCount])
+
+	return &camera.Frame{
+		Celsius:       celsius,
+		IR:            irData,
+		Width:         width,
+		Height:        height,
+		ShutterActive: flags&flagShutterActive != 0,
 	}
-
-	irData := make([]uint8, thermalCount)
-	copy(irData, p.frameBuf[off:off+thermalCount])
-	off += thermalCount
-
-	frame := &camera.Frame{
-		Thermal:              thermal,
-		IR:                   irData,
-		Width:                width,
-		Height:               height,
-		ShutterActive:        flags&flagShutterActive != 0,
-		HardwareFrameCounter: hwFrameCnt,
-	}
-
-	if flags&flagHasCelsius != 0 {
-		frame.Celsius = parseCelsiusPlane(p.frameBuf, off, thermalCount)
-	}
-
-	return frame
 }
 
 // ReadFrameAt reads a specific frame by index independently of playback state.
@@ -450,30 +436,20 @@ func (p *Player) ReadFrameAt(idx int) (*camera.Frame, time.Time, error) {
 	foff := timestampSize
 	flags := buf[foff]
 	foff++
-	hwFC := binary.LittleEndian.Uint16(buf[foff : foff+2])
-	foff += 2
 
 	pixelCount := width * height
-	thermal := make([]uint16, pixelCount)
-	for i := range thermal {
-		thermal[i] = binary.LittleEndian.Uint16(buf[foff : foff+2])
-		foff += 2
-	}
+	celsius := parseCelsiusPlane(buf, foff, pixelCount)
+	foff += pixelCount * celsiusFloat32Size
+
 	irData := make([]uint8, pixelCount)
 	copy(irData, buf[foff:foff+pixelCount])
-	foff += pixelCount
 
 	frame := &camera.Frame{
-		Thermal:              thermal,
-		IR:                   irData,
-		Width:                width,
-		Height:               height,
-		ShutterActive:        flags&flagShutterActive != 0,
-		HardwareFrameCounter: hwFC,
-	}
-
-	if flags&flagHasCelsius != 0 {
-		frame.Celsius = parseCelsiusPlane(buf, foff, pixelCount)
+		Celsius:       celsius,
+		IR:            irData,
+		Width:         width,
+		Height:        height,
+		ShutterActive: flags&flagShutterActive != 0,
 	}
 
 	return frame, frameTime, nil

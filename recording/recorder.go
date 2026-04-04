@@ -87,37 +87,21 @@ func (r *Recorder) WriteFrame(frame *camera.Frame) error {
 	binary.LittleEndian.PutUint64(r.rawBuf[off:off+8], uint64(elapsed))
 	off += 8
 
-	// Flags byte — compute before writing so all bits are known upfront.
+	// Flags byte
 	var flags uint8
 	if frame.ShutterActive {
 		flags |= flagShutterActive
 	}
 
-	if frame.Celsius != nil {
-		flags |= flagHasCelsius
-	}
-
 	r.rawBuf[off] = flags
 	off++
 
-	// HardwareFrameCounter
-	binary.LittleEndian.PutUint16(r.rawBuf[off:off+2], frame.HardwareFrameCounter)
-	off += 2
-
-	// Thermal data (uint16 LE)
-	for _, v := range frame.Thermal {
-		binary.LittleEndian.PutUint16(r.rawBuf[off:off+2], v)
-		off += 2
-	}
+	// Per-pixel Celsius plane (float32 LE)
+	off = appendCelsiusPlane(r.rawBuf, off, frame.Celsius)
 
 	// IR data (uint8)
 	copy(r.rawBuf[off:], frame.IR)
 	off += len(frame.IR)
-
-	// Optional per-pixel Celsius plane (float32 LE) when flagHasCelsius is set.
-	if frame.Celsius != nil {
-		off = appendCelsiusPlane(r.rawBuf, off, frame.Celsius)
-	}
 
 	// Compress
 	r.compBuf.Reset()

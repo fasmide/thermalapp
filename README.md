@@ -1,12 +1,14 @@
 # thermalapp
 
-A real-time thermal camera viewer for the InfiRay Thermal Master P3 (and similar) USB thermal cameras, written in Go with a [Gio](https://gioui.org) UI.
+A real-time thermal camera viewer for the **InfiRay Thermal Master P3** and (experimentally) the **Seek Thermal CompactPRO**, written in Go with a [Gio](https://gioui.org) UI.
 
 ![Go](https://img.shields.io/badge/Go-1.26-blue) ![Gio](https://img.shields.io/badge/Gio-v0.9-purple) ![Platform](https://img.shields.io/badge/Linux-USB-green)
 
+> **No formal verification.** This application has no test suite and has not been validated against calibrated reference hardware. It works well for our own use cases — visualizing thermal data, recording scenes, and spot-measuring relative temperatures — but accuracy guarantees cannot be made. Use accordingly.
+
 ## Features
 
-- **Live thermal imaging** at 256x192 from the P3 USB camera
+- **Live thermal imaging** — 256×192 from the InfiRay P3; 320×240 from the Seek CompactPRO (experimental)
 - **4 color palettes** — Inferno, Iron, Jet, Grayscale (cycle with `C`)
 - **AGC modes** — Percentile (auto-contrast) and Hardware (camera-side)
 - **Emissivity correction** — 39 material presets across 7 categories with per-spot override support
@@ -21,8 +23,9 @@ A real-time thermal camera viewer for the InfiRay Thermal Master P3 (and similar
 ## Quick Start
 
 ```bash
-# USB permissions (run once, then replug camera)
-sudo cp udev/99-p3thermal.rules /etc/udev/rules.d/
+# USB permissions (run once per camera, then replug)
+sudo cp udev/99-p3thermal.rules /etc/udev/rules.d/      # InfiRay P3
+sudo cp udev/99-seek-thermal.rules /etc/udev/rules.d/   # Seek CompactPRO (if applicable)
 sudo udevadm control --reload-rules
 
 # Build and run
@@ -125,36 +128,45 @@ Playback provides:
 The `.tha` format is a compact, seekable binary format:
 
 - **32-byte header**: magic (`THERMAP`), version, sensor dimensions, frame count, start time
-- **Per frame**: 4-byte compressed size prefix + deflate-compressed block containing timestamp, flags (shutter state), hardware frame counter, raw uint16 thermal data, and uint8 IR data
+- **Per frame**: 4-byte compressed size prefix + deflate-compressed block containing timestamp, flags (shutter state), per-pixel temperature as `float32` Celsius, and uint8 IR (hardware AGC) data
 - Typical compression ratio: ~3:1 (deflate level 1 for real-time performance)
-- A 10-second recording at 25fps is roughly 26 MB
 
-Recordings are camera-agnostic — the format stores raw sensor data without assumptions about the source device.
+Recordings are camera-agnostic — the format stores normalized `Frame` data (Celsius + IR) without assumptions about the source device.
 
 ## Architecture
 
 ```
-USB Camera ──> camera/p3.go ──> camera.Frame ──┬──> recording/recorder.go ──> .tha file
-                                               │
-.tha file ──> recording/player.go ─────────────┘
-                                               │
-                                               v
-                                        colorize.Colorize()
-                                        (AGC + palette + emissivity)
-                                               │
-                                               v
-                                         colorize.Result
-                                        (RGBA + Celsius[])
-                                               │
-                    ┌──────────────────────────┼──────────────────────────┐
-                    v                          v                          v
-               ui/app.go                 ui/spot.go                ui/graph.go
-              (main window)             (measurement)             (graph windows)
+USB Camera ──> camera/p3.go             ──┐
+               camera/seekcompactpro.go ──┤──> camera.Frame ──┬──> recording/recorder.go ──> .tha file
+                                          │                   │
+.tha file ──> recording/player.go ────────┘                   │
+                                                              v
+                                                       colorize.Colorize()
+                                                       (AGC + palette + emissivity)
+                                                              │
+                                                              v
+                                                        colorize.Result
+                                                       (RGBA + Celsius[])
+                                                              │
+                              ┌──────────────────────────────┼──────────────────────────┐
+                              v                              v                          v
+                         ui/app.go                     ui/spot.go                ui/graph.go
+                        (main window)                 (measurement)             (graph windows)
 ```
 
 ## Camera Support
 
-Currently supports the **InfiRay Thermal Master P3** (VID `0x3474`, PID `0x45A2`). The `camera.Camera` interface is designed for adding other models:
+### InfiRay Thermal Master P3 (primary)
+
+VID `0x3474`, PID `0x45A2` — 256×192 sensor. Full support: live streaming, shutter/NUC triggering, gain switching, radiometric recording and playback. Protocol is fully reverse-engineered; see [p3-ir-camera/P3_PROTOCOL.md](p3-ir-camera/P3_PROTOCOL.md).
+
+### Seek Thermal CompactPRO (experimental)
+
+VID `0x289d`, PID `0x0011` — 320×240 usable image from a 342×260 raw frame. The driver implements the Seek v5 USB protocol: calibration via TLUT for per-pixel Celsius values and AHE (Adaptive Histogram Equalization) for hardware AGC output. All application features (palettes, AGC modes, emissivity, recording, playback) work, but the Seek path has seen less real-world testing than the P3.
+
+### Adding other cameras
+
+The `camera.Camera` interface is the extension point:
 
 ```go
 type Camera interface {
@@ -170,12 +182,23 @@ type Camera interface {
 }
 ```
 
-## Protocol Reference
+Implement the interface so that `ReadFrame()` returns a fully populated `Frame` — with `Celsius[]` in °C and `IR[]` as 8-bit AGC brightness — and the rest of the application requires no changes.
 
-See [p3-ir-camera/P3_PROTOCOL.md](p3-ir-camera/P3_PROTOCOL.md) for the complete USB protocol documentation, including frame layout, command structure, and metadata fields.
+## Protocol Reference
 
 See [METADATA-PROTOCOL.md](METADATA-PROTOCOL.md) for reverse-engineered metadata row register assignments (shutter detection, frame counters, sensor temperatures).
 
 ## License
 
-See individual files for license information. The P3 protocol reference implementation in `p3-ir-camera/` has its own [LICENSE](p3-ir-camera/LICENSE).
+This project is released under the [Unlicense](LICENSE) — public domain, no conditions.
+
+## Acknowledgements
+
+Hardware support would not have been possible without studying the prior work of:
+
+- [jvdillon/p3-ir-camera](https://github.com/jvdillon/p3-ir-camera) — reverse-engineered P3 USB protocol and frame format
+- [OpenThermal/libseek-thermal](https://github.com/OpenThermal/libseek-thermal) — Seek Thermal USB protocol implementation
+
+Thank you for making your research public.
+
+A significant portion of the Seek CompactPRO driver was additionally reverse-engineered from the official Seek Thermal Android application. As a result, some of the protocol details are inferred rather than documented, and we are not fully confident in the correctness of all edge cases.

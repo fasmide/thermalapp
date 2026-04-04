@@ -323,15 +323,14 @@ func runRevMeta() {
 	frameNum := 0
 
 	for {
-		frame, err := cam.ReadFrame()
+		meta, err := cam.ReadMetadata()
 		if err != nil {
-			log.Printf("read frame: %v", err)
+			log.Printf("read metadata: %v", err)
 
 			continue
 		}
 		frameNum++
 
-		meta := frame.Metadata
 		if prev == nil {
 			printInitialMetadata(frameNum, meta)
 			prev = make([]uint16, len(meta))
@@ -454,15 +453,13 @@ func runRevMeta2() {
 	frameNum := 0
 
 	for {
-		frame, err := cam.ReadFrame()
+		meta, err := cam.ReadMetadata()
 		if err != nil {
-			log.Printf("read frame: %v", err)
+			log.Printf("read metadata: %v", err)
 
 			continue
 		}
 		frameNum++
-		meta := frame.Metadata
-
 		anyChange := hasTrackedChange(meta, prev, regs)
 		extraChanges := countExtraChanges(meta, prev, regs)
 

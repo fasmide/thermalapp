@@ -4,7 +4,7 @@
 //
 //	Header (32 bytes):
 //	  [0:8]   Magic "THERMAP\x00"
-//	  [8:10]  Version uint16 LE (4)
+//	  [8:10]  Version uint16 LE (5)
 //	  [10:12] SensorWidth uint16 LE
 //	  [12:14] SensorHeight uint16 LE
 //	  [14:18] FrameCount uint32 LE (updated on close)
@@ -12,14 +12,12 @@
 //	  [26:32] Reserved (zero)
 //
 //	Per frame (deflate compressed):
-//	  [0:4]                  CompressedSize uint32 LE
-//	  [4:4+N]                Deflate-compressed block containing:
-//	    [0:8]                  TimestampNs int64 LE (nanos since recording start)
-//	    [8]                    Flags uint8 (bit 0 = ShutterActive, bit 1 = HasCelsius)
-//	    [9:11]                 HardwareFrameCounter uint16 LE
-//	    [11:11+W*H*2]          Thermal []uint16 LE
-//	    [11+W*H*2:11+W*H*3]   IR []uint8
-//	    [11+W*H*3:11+W*H*7]   Celsius []float32 LE (only when HasCelsius flag set)
+//	  [0:4]              CompressedSize uint32 LE
+//	  [4:4+N]            Deflate-compressed block containing:
+//	    [0:8]              TimestampNs int64 LE (nanos since recording start)
+//	    [8]                Flags uint8 (bit 0 = ShutterActive)
+//	    [9:9+W*H*4]        Celsius []float32 LE
+//	    [9+W*H*4:9+W*H*5]  IR []uint8
 package recording
 
 import (
@@ -33,16 +31,14 @@ var magic = [8]byte{'T', 'H', 'E', 'R', 'M', 'A', 'P', 0}
 
 const (
 	headerSize         = 32
-	formatVersion      = 4
+	formatVersion      = 5
 	timestampSize      = 8
-	frameMetaSize      = 3 // 1 byte flags + 2 bytes HardwareFrameCounter
+	frameMetaSize      = 1 // 1 byte flags
 	frameSizePrefixLen = 4
-	uint16ByteSize     = 2 // bytes per uint16 sample in the thermal frame
-	celsiusFloat32Size = 4 // bytes per float32 sample in the celsius plane
+	celsiusFloat32Size = 4 // bytes per float32 sample
 
 	// Frame flags (Flags byte, offset 8 within uncompressed payload).
 	flagShutterActive uint8 = 0x01 // bit 0: shutter closed during this frame
-	flagHasCelsius    uint8 = 0x02 // bit 1: per-pixel Celsius plane appended after IR
 )
 
 // Header is the file header.
@@ -53,27 +49,24 @@ type Header struct {
 	StartTime  int64 // Unix nanoseconds
 }
 
-// frameDataSize returns the byte size of one uncompressed frame payload (excluding timestamp).
+// frameDataSize returns the byte size of one uncompressed frame payload (excluding timestamp and flags).
 func (h Header) frameDataSize() int {
 	w, ht := int(h.Width), int(h.Height)
-	thermal := w * ht * uint16ByteSize
+	celsius := w * ht * celsiusFloat32Size
 	ir := w * ht
 
-	return thermal + ir
+	return celsius + ir
 }
 
-// framePayloadSize returns the uncompressed frame size including timestamp and frame metadata.
+// framePayloadSize returns the full uncompressed frame size including timestamp and flags.
 func (h Header) framePayloadSize() int {
 	return timestampSize + frameMetaSize + h.frameDataSize()
 }
 
-// frameMaxPayloadSize returns the maximum uncompressed frame size, including
-// the optional per-pixel Celsius plane (flagHasCelsius). Use this to size
-// read/write buffers so they can accommodate both plain and Celsius-extended frames.
+// frameMaxPayloadSize returns the same as framePayloadSize — kept for symmetry
+// with the recorder/player buffer-sizing API.
 func (h Header) frameMaxPayloadSize() int {
-	w, ht := int(h.Width), int(h.Height)
-
-	return h.framePayloadSize() + w*ht*celsiusFloat32Size
+	return h.framePayloadSize()
 }
 
 func writeHeader(out io.Writer, hdr Header) error {
