@@ -185,6 +185,31 @@ func (p *Player) Close() {
 	}
 }
 
+// AvgFrameInterval returns the average inter-frame interval of the recording
+// by reading the timestamps of the first and last frame.
+// Returns 0 if the recording has fewer than 2 frames or if timestamps cannot be read.
+func (p *Player) AvgFrameInterval() time.Duration {
+	p.mu.Lock()
+	total := int(p.header.FrameCount)
+	p.mu.Unlock()
+
+	if total < 2 {
+		return 0
+	}
+
+	_, firstTime, err := p.ReadFrameAt(0)
+	if err != nil {
+		return 0
+	}
+
+	_, lastTime, err := p.ReadFrameAt(total - 1)
+	if err != nil {
+		return 0
+	}
+
+	return lastTime.Sub(firstTime) / time.Duration(total-1)
+}
+
 // ReleaseMmapPages advises the kernel that mmap pages are no longer needed
 // and can be reclaimed immediately. The mapping stays valid — pages will be
 // faulted back in from disk on next access.

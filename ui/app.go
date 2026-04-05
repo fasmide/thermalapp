@@ -42,7 +42,6 @@ const (
 	toastDuration           = 3 * time.Second        // duration for standard toast notifications
 	backfillDebounce        = 150 * time.Millisecond // debounce delay before starting backfill
 	frameBytesPerPixel      = 4                      // bytes per pixel when sizing buffer panel
-	msPerFrameAt25FPS       = 40                     // milliseconds per frame at 25 fps
 	nucBadgeInsetDp         = 8                      // NUC badge inset from image edge in dp
 	colorbarHeightDp        = 20                     // colorbar height in dp
 	colorbarLabelXOffset    = 4                      // x offset for colorbar min label in px
@@ -234,6 +233,7 @@ func (a *App) SetPlayer(p *recording.Player) {
 	a.player = p
 	h := p.Header()
 	a.playBuf = NewPlaybackBuffer(int(h.Width), int(h.Height), int(p.FrameCount()), a.frameBuf.maxBytes)
+	a.playBuf.SetAvgFrameInterval(p.AvgFrameInterval())
 	a.Window.Option(app.Title(fmt.Sprintf("%s — Playback (%d frames)", a.modelName, p.FrameCount())))
 }
 
@@ -875,15 +875,8 @@ func (a *App) applyBufPanelSizeChange(newBytes int64) {
 func (a *App) applyBufPanelIntervalChange(newInterval time.Duration) {
 	a.frameBuf.SetSampleInterval(newInterval)
 	if a.playBuf != nil {
-		skip := 1
-		if newInterval > 0 {
-			skip = int(newInterval.Milliseconds() / msPerFrameAt25FPS)
-			if skip < 1 {
-				skip = 1
-			}
-		}
 		a.playBuf.StopBackfill()
-		a.playBuf.SetSampleSkip(skip)
+		a.playBuf.SetSampleInterval(newInterval)
 		a.playBuf.Clear()
 		idx := a.player.FrameIndex()
 		a.mu.Lock()

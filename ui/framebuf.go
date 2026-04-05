@@ -232,13 +232,15 @@ type pbEntry struct {
 // PlaybackBuffer caches colorized celsius frames by recording frame index.
 // On QueryPixel it returns samples up to the current playback position.
 type PlaybackBuffer struct {
-	mu         sync.RWMutex
-	cache      map[int]*pbEntry
-	width      int
-	height     int
-	maxEntries int
-	currentIdx int // current playback frame index
-	sampleSkip int // store every Nth frame (0 or 1 = every frame)
+	mu              sync.RWMutex
+	cache           map[int]*pbEntry
+	width           int
+	height          int
+	maxEntries      int
+	currentIdx      int           // current playback frame index
+	sampleInterval  time.Duration // minimum interval between stored frames (0 = every frame)
+	lastAddTime     time.Time     // timestamp of last stored frame
+	avgFrameInterval time.Duration // average inter-frame interval of the recording (for backfill skip)
 
 	// Backfill state
 	cancelBackfill context.CancelFunc
@@ -267,15 +269,19 @@ func NewPlaybackBuffer(width, height int, totalFrames int, maxBytes int64) *Play
 
 // Add caches the celsius frame at the given recording frame index and
 // updates the current playback position. Used by UpdateFrame during playback.
-// Respects sampleSkip: only frames aligned to the skip grid are stored.
+// Respects sampleInterval: frames whose timestamp is too close to the last
+// stored frame are dropped, identical to FrameBuffer behaviour.
 func (pb *PlaybackBuffer) Add(frameIdx int, celsius []float32, timestamp time.Time) {
 	pb.mu.Lock()
 	defer pb.mu.Unlock()
 	pb.currentIdx = frameIdx
-	skip := pb.sampleSkip
-	if skip > 1 && frameIdx%skip != 0 {
-		return // not on the sample grid
+
+	// Time-based throttle: drop frame if too soon since the last stored frame.
+	if pb.sampleInterval > 0 && !pb.lastAddTime.IsZero() &&
+		timestamp.Sub(pb.lastAddTime) < pb.sampleInterval {
+		return
 	}
+	pb.lastAddTime = timestamp
 	pb.store(frameIdx, celsius, timestamp)
 }
 
@@ -422,20 +428,30 @@ func (pb *PlaybackBuffer) SetMaxBytes(maxBytes int64) {
 	pb.cache = make(map[int]*pbEntry, pb.maxEntries)
 }
 
-// SetSampleSkip sets the frame skip factor. 0 or 1 means every frame.
-// Higher values mean only every Nth frame is stored/backfilled.
-func (pb *PlaybackBuffer) SetSampleSkip(n int) {
+// SetSampleInterval sets the minimum interval between stored frames.
+// A value of 0 means every frame is stored.
+// Resets the last-add timestamp so the very next frame is always accepted.
+func (pb *PlaybackBuffer) SetSampleInterval(d time.Duration) {
 	pb.mu.Lock()
 	defer pb.mu.Unlock()
-	pb.sampleSkip = n
+	pb.sampleInterval = d
+	pb.lastAddTime = time.Time{}
 }
 
-// SampleSkip returns the current skip factor.
-func (pb *PlaybackBuffer) SampleSkip() int {
+// SampleInterval returns the current sample interval.
+func (pb *PlaybackBuffer) SampleInterval() time.Duration {
 	pb.mu.RLock()
 	defer pb.mu.RUnlock()
 
-	return pb.sampleSkip
+	return pb.sampleInterval
+}
+
+// SetAvgFrameInterval stores the recording's average inter-frame interval,
+// used to compute the correct backfill skip factor.
+func (pb *PlaybackBuffer) SetAvgFrameInterval(d time.Duration) {
+	pb.mu.Lock()
+	defer pb.mu.Unlock()
+	pb.avgFrameInterval = d
 }
 
 // StopBackfill cancels any running background backfill and waits for it to finish.
@@ -478,14 +494,18 @@ func (pb *PlaybackBuffer) StartBackfill(
 }
 
 // backfillWork returns the list of frame indices that need to be loaded,
-// newest first, capped at pb.maxEntries and aligned to the skip grid.
+// newest first, capped at pb.maxEntries and spaced by the skip derived from
+// the configured sample interval and the recording's average frame interval.
 func (pb *PlaybackBuffer) backfillWork(upToIdx int) []int {
 	pb.mu.RLock()
 	defer pb.mu.RUnlock()
 
-	skip := pb.sampleSkip
-	if skip < 1 {
-		skip = 1
+	skip := 1
+	if pb.sampleInterval > 0 && pb.avgFrameInterval > 0 {
+		skip = int(pb.sampleInterval / pb.avgFrameInterval)
+		if skip < 1 {
+			skip = 1
+		}
 	}
 
 	work := make([]int, 0, upToIdx)
