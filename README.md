@@ -71,6 +71,22 @@ sudo dnf install libusb1-devel
 | Scroll wheel | Step frames (playback mode) |
 | Click emissivity in status bar | Open emissivity preset picker |
 
+## AGC Modes
+
+Press `A` to cycle between modes. The mode only affects how pixel colours are computed — temperature readings, spot measurements, and graph values are identical in all modes.
+
+| Mode | Source data | How the colour scale is set |
+|------|-------------|----------------------------|
+| **Percentile** | Temperature plane (°C) | 1st–99th percentile of all pixel temperatures per frame. Clips the coldest and hottest 1% so outliers don't dominate the scale. Colorbar labels show real °C values. |
+| **HW AGC** | IR brightness plane (8-bit) | Uses the 8-bit brightness values provided directly by the camera driver, whatever processing the camera applied to produce them. Colours reflect the camera's own gain decision, not a calibrated temperature range. Colorbar labels are not meaningful in this mode. |
+| **Fixed** | Temperature plane (°C) | Same as Percentile but uses a user-defined min/max instead of auto-computed bounds. |
+
+**When to use which:**
+
+- **Percentile** is the default and most useful for radiometric work. The colour scale adapts to whatever is in the scene each frame, and it maps directly to temperature — so a warmer colour always means a warmer surface.
+- **HW AGC** can look subjectively better in some scenes because the camera's ISP applies detail enhancement (DDE) and gamma correction on top of its gain mapping. It can also be useful when the scene has a very wide temperature range that causes Percentile to compress contrast on the objects you care about. The tradeoff is that colours no longer have a direct temperature meaning.
+- **Fixed** is useful when comparing recordings or switching between scenes where you want a consistent colour scale rather than per-frame auto-scaling.
+
 ## Emissivity
 
 All infrared cameras measure *apparent* temperature assuming a perfect blackbody (emissivity = 1.0). Real surfaces emit less IR, so readings must be corrected:
