@@ -20,6 +20,10 @@ import (
 const (
 	// pausedPollInterval is how often ReadFrame checks for unpause when paused.
 	pausedPollInterval = 50 * time.Millisecond
+
+	// minFramesForInterval is the minimum number of frames required to compute
+	// an average inter-frame interval.
+	minFramesForInterval = 2
 )
 
 // Player reads frames from a .tha recording file and implements camera.Camera
@@ -193,7 +197,7 @@ func (p *Player) AvgFrameInterval() time.Duration {
 	total := int(p.header.FrameCount)
 	p.mu.Unlock()
 
-	if total < 2 {
+	if total < minFramesForInterval {
 		return 0
 	}
 

@@ -30,7 +30,7 @@ const (
 	dropdownItemLeftInsetDp = 16  // left inset for dropdown items in dp
 	hoursPerDay             = 24  // hours per day for formatDuration
 	bufPanelWidthDp         = 420 // width of the buffer settings panel in dp
-	bufPanelHeightDp        = 460 // height of the buffer settings panel in dp
+	bufPanelHeightDp        = 560 // height of the buffer settings panel in dp
 
 	// Inset constants for dropdown header row.
 	dropdownHeaderInsetDp = 8 // left/right inset for category header rows
@@ -405,12 +405,26 @@ var sampleRatePresets = []sampleRatePreset{
 	{"1 / 10 min", 10 * time.Minute},
 }
 
+type aggModePreset struct {
+	Label string
+	Mode  AggregationMode
+}
+
+var aggModePresets = []aggModePreset{
+	{"None (boundary frame)", AggregateNone},
+	{"Min (per-pixel minimum)", AggregateMin},
+	{"Mean (per-pixel average)", AggregateMean},
+	{"Max (per-pixel maximum)", AggregateMax},
+}
+
 // BufferPanelResult holds what changed when the user interacts with the panel.
 type BufferPanelResult struct {
 	SizeChanged     bool
 	NewBytes        int64
 	IntervalChanged bool
 	NewInterval     time.Duration
+	AggModeChanged  bool
+	NewAggMode      AggregationMode
 }
 
 // BufferPanel manages the popup panel for buffer size and sample rate.
@@ -419,6 +433,7 @@ type BufferPanel struct {
 	tag       bool
 	sizeItems []widget.Clickable
 	rateItems []widget.Clickable
+	aggItems  []widget.Clickable
 	sizeList  widget.List
 	rateList  widget.List
 }
@@ -428,6 +443,7 @@ func NewBufferPanel() *BufferPanel {
 	panel := &BufferPanel{
 		sizeItems: make([]widget.Clickable, len(bufSizePresets)),
 		rateItems: make([]widget.Clickable, len(sampleRatePresets)),
+		aggItems:  make([]widget.Clickable, len(aggModePresets)),
 	}
 	panel.sizeList.List.Axis = layout.Vertical
 	panel.rateList.List.Axis = layout.Vertical
@@ -470,6 +486,16 @@ func (p *BufferPanel) rateIdx(d time.Duration) int {
 	}
 
 	return best
+}
+
+func (p *BufferPanel) aggModeIdx(mode AggregationMode) int {
+	for i, pr := range aggModePresets {
+		if pr.Mode == mode {
+			return i
+		}
+	}
+
+	return 0
 }
 
 func absDur(d time.Duration) time.Duration {
@@ -539,6 +565,7 @@ func (p *BufferPanel) Layout(
 	gtx layout.Context, theme *material.Theme,
 	currentBytes int64, currentInterval time.Duration,
 	frameBytesPerPixel int, sensorPixels int,
+	currentAggMode AggregationMode,
 ) BufferPanelResult {
 	var res BufferPanelResult
 	if !p.open {
@@ -599,6 +626,7 @@ func (p *BufferPanel) Layout(
 
 	curSizeIdx := p.sizeIdx(currentBytes)
 	curRateIdx := p.rateIdx(currentInterval)
+	curAggIdx := p.aggModeIdx(currentAggMode)
 
 	layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
@@ -624,6 +652,15 @@ func (p *BufferPanel) Layout(
 				func(gtx layout.Context, idx int) layout.Dimensions {
 					return p.layoutRateRow(gtx, theme, idx, curRateIdx, maxFrames, &res, pal)
 				})
+		}),
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return p.layoutDivider(gtx)
+		}),
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return p.layoutSectionHeader(gtx, theme, "AGGREGATION", pal.header)
+		}),
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return p.layoutAggSection(gtx, theme, curAggIdx, &res, pal)
 		}),
 	)
 
@@ -843,6 +880,72 @@ func (p *BufferPanel) layoutRateRow(
 							return lbl.Layout(gtx)
 						}),
 					)
+				})
+			}),
+		)
+	})
+}
+
+// layoutAggSection renders all aggregation mode rows as Rigid children (always fits).
+func (p *BufferPanel) layoutAggSection(
+	gtx layout.Context, theme *material.Theme,
+	curAggIdx int, res *BufferPanelResult, pal bufPanelPalette,
+) layout.Dimensions {
+	children := make([]layout.FlexChild, len(aggModePresets))
+	for i := range aggModePresets {
+		children[i] = layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return p.layoutAggRow(gtx, theme, i, curAggIdx, res, pal)
+		})
+	}
+
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
+}
+
+// layoutAggRow renders a single aggregation-mode preset row.
+func (p *BufferPanel) layoutAggRow(
+	gtx layout.Context, theme *material.Theme,
+	idx, curAggIdx int, res *BufferPanelResult, pal bufPanelPalette,
+) layout.Dimensions {
+	preset := aggModePresets[idx]
+
+	if p.aggItems[idx].Clicked(gtx) {
+		res.AggModeChanged = true
+		res.NewAggMode = preset.Mode
+		p.Close()
+	}
+
+	isSelected := idx == curAggIdx
+	isHovered := p.aggItems[idx].Hovered()
+
+	bgColor := color.NRGBA{A: 0}
+	if isSelected {
+		bgColor = color.NRGBA{R: 60, G: 90, B: 160, A: 255}
+	} else if isHovered {
+		bgColor = color.NRGBA{R: 55, G: 55, B: 55, A: 255}
+	}
+
+	return p.aggItems[idx].Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+		return layout.Stack{}.Layout(gtx,
+			layout.Expanded(func(gtx layout.Context) layout.Dimensions {
+				if bgColor.A > 0 {
+					defer clip.Rect{Max: gtx.Constraints.Min}.Push(gtx.Ops).Pop()
+					paint.Fill(gtx.Ops, bgColor)
+				}
+
+				return layout.Dimensions{Size: gtx.Constraints.Min}
+			}),
+			layout.Stacked(func(gtx layout.Context) layout.Dimensions {
+				return layout.Inset{
+					Left: unit.Dp(bufPanelItemLInsetDp), Right: unit.Dp(bufPanelItemRInsetDp),
+					Top: unit.Dp(bufPanelItemVInsetDp), Bottom: unit.Dp(bufPanelItemVInsetDp),
+				}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+					lbl := material.Body2(theme, preset.Label)
+					lbl.Color = pal.lightGray
+					if isSelected {
+						lbl.Color = color.NRGBA{R: 255, G: 255, B: 255, A: 255}
+					}
+
+					return lbl.Layout(gtx)
 				})
 			}),
 		)

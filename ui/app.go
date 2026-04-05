@@ -852,6 +852,34 @@ func (a *App) handlePointerPress(ptrEv pointer.Event) {
 	}
 }
 
+// applyBufPanelAggModeChange handles an aggregation mode change from the buffer panel.
+func (a *App) applyBufPanelAggModeChange(mode AggregationMode) {
+	a.frameBuf.SetAggMode(mode)
+	if a.playBuf != nil {
+		a.playBuf.StopBackfill()
+		a.playBuf.SetAggMode(mode)
+		a.playBuf.Clear()
+		idx := a.player.FrameIndex()
+		a.mu.Lock()
+		params := a.params
+		rot := a.rotation
+		a.mu.Unlock()
+		a.playBuf.StartBackfill(a.player, idx, params, rot, a.invalidateGraphs)
+	}
+	label := aggModePresets[0].Label
+	for _, pr := range aggModePresets {
+		if pr.Mode == mode {
+			label = pr.Label
+
+			break
+		}
+	}
+	a.mu.Lock()
+	a.toastMsg = fmt.Sprintf("Aggregation: %s", label)
+	a.toastExpiry = time.Now().Add(toastShortDuration)
+	a.mu.Unlock()
+}
+
 // applyBufPanelSizeChange handles a size change from the buffer panel.
 func (a *App) applyBufPanelSizeChange(newBytes int64) {
 	a.frameBuf.SetMaxBytes(newBytes)
@@ -984,8 +1012,9 @@ func (a *App) layoutBufPanelOverlay(gtx layout.Context) {
 
 	curBytes := a.frameBuf.MaxBytes()
 	curInterval := a.frameBuf.SampleInterval()
+	curAggMode := a.frameBuf.AggMode()
 	w, h := a.frameBuf.Dims()
-	res := a.bufPanel.Layout(gtx, a.theme, curBytes, curInterval, frameBytesPerPixel, w*h)
+	res := a.bufPanel.Layout(gtx, a.theme, curBytes, curInterval, frameBytesPerPixel, w*h, curAggMode)
 
 	if res.SizeChanged {
 		a.applyBufPanelSizeChange(res.NewBytes)
@@ -993,6 +1022,10 @@ func (a *App) layoutBufPanelOverlay(gtx layout.Context) {
 
 	if res.IntervalChanged {
 		a.applyBufPanelIntervalChange(res.NewInterval)
+	}
+
+	if res.AggModeChanged {
+		a.applyBufPanelAggModeChange(res.NewAggMode)
 	}
 }
 

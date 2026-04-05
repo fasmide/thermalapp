@@ -19,11 +19,84 @@ import (
 const (
 	memInfoMinFields   = 2    // minimum field count in a /proc/meminfo line
 	maxBackfillWorkers = 8    // maximum number of parallel backfill goroutines
-	float32ByteSize    = 4  // bytes per float32 pixel in the celsius frame buffer
-	frameOverheadBytes = 48 // fixed overhead bytes per stored frame: time.Time (24) + []float32 header (24)
+	float32ByteSize    = 4    // bytes per float32 pixel in the celsius frame buffer
+	frameOverheadBytes = 48   // fixed overhead bytes per stored frame: time.Time (24) + []float32 header (24)
 	kbytesPerMB        = 1024 // kilobytes per megabyte (for /proc/meminfo conversion)
 	backfillChanMult   = 2    // channel buffer multiplier relative to worker count
 )
+
+// AggregationMode controls how frames within a sampling interval are combined.
+type AggregationMode int
+
+const (
+	AggregateNone AggregationMode = iota // store the boundary frame (current default behaviour)
+	AggregateMin                         // store the per-pixel minimum across the interval
+	AggregateMean                        // store the per-pixel mean across the interval
+	AggregateMax                         // store the per-pixel maximum across the interval
+)
+
+// aggAccum accumulates per-pixel min/sum/max across a set of celsius frames.
+// It is reset after each drain.
+type aggAccum struct {
+	min   []float32
+	sum   []float64
+	max   []float32
+	count int
+}
+
+// reset marks the accumulator as empty without releasing its backing arrays.
+func (a *aggAccum) reset() { a.count = 0 }
+
+// add incorporates a celsius frame into the accumulator.
+func (a *aggAccum) add(celsius []float32) {
+	n := len(celsius)
+	if len(a.min) != n {
+		a.min = make([]float32, n)
+		a.sum = make([]float64, n)
+		a.max = make([]float32, n)
+	}
+	if a.count == 0 {
+		copy(a.min, celsius)
+		copy(a.max, celsius)
+		for pixIdx, val := range celsius {
+			a.sum[pixIdx] = float64(val)
+		}
+	} else {
+		for pixIdx, val := range celsius {
+			if val < a.min[pixIdx] {
+				a.min[pixIdx] = val
+			}
+			a.sum[pixIdx] += float64(val)
+			if val > a.max[pixIdx] {
+				a.max[pixIdx] = val
+			}
+		}
+	}
+	a.count++
+}
+
+// drain returns the aggregated result for the given mode and resets the accumulator.
+// Returns nil if the accumulator is empty.
+func (a *aggAccum) drain(mode AggregationMode) []float32 {
+	if a.count == 0 {
+		return nil
+	}
+	result := make([]float32, len(a.min))
+	switch mode {
+	case AggregateMin:
+		copy(result, a.min)
+	case AggregateMean:
+		n := float64(a.count)
+		for i, s := range a.sum {
+			result[i] = float32(s / n)
+		}
+	case AggregateMax:
+		copy(result, a.max)
+	}
+	a.reset()
+
+	return result
+}
 
 // availableMemoryBytes returns the available system memory in bytes.
 // Falls back to 0 if detection fails.
@@ -75,6 +148,8 @@ type FrameBuffer struct {
 	height         int
 	sampleInterval time.Duration // minimum interval between stored frames (0 = every frame)
 	lastAdd        time.Time     // time of last stored frame
+	aggMode        AggregationMode
+	accum          aggAccum
 }
 
 // NewFrameBuffer creates a frame buffer sized to hold at most maxBytes of data.
@@ -98,19 +173,31 @@ func (fb *FrameBuffer) computeMax(width, height int) {
 
 // Add appends a celsius frame to the buffer. The celsius slice must have
 // len == width*height matching the buffer dimensions.
-// Frames arriving faster than the configured sample interval are silently dropped.
+// Frames arriving faster than the configured sample interval are silently dropped,
+// or accumulated for aggregation if an AggregationMode other than AggregateNone is set.
 func (fb *FrameBuffer) Add(celsius []float32, timestamp time.Time) {
 	fb.mu.Lock()
 	defer fb.mu.Unlock()
 
-	// Throttle: skip frame if it's too soon since the last stored frame
-	if fb.sampleInterval > 0 && !fb.lastAdd.IsZero() && timestamp.Sub(fb.lastAdd) < fb.sampleInterval {
-		return
-	}
-
 	expected := fb.width * fb.height
 	if len(celsius) != expected {
 		return
+	}
+
+	// Throttle: skip frame if it's too soon since the last stored frame.
+	if fb.sampleInterval > 0 && !fb.lastAdd.IsZero() && timestamp.Sub(fb.lastAdd) < fb.sampleInterval {
+		if fb.aggMode != AggregateNone {
+			fb.accum.add(celsius)
+		}
+
+		return
+	}
+
+	// Determine what to store: drain aggregation or use the raw frame.
+	toStore := celsius
+	if fb.aggMode != AggregateNone && fb.accum.count > 0 {
+		fb.accum.add(celsius)
+		toStore = fb.accum.drain(fb.aggMode)
 	}
 
 	fb.lastAdd = timestamp
@@ -120,7 +207,7 @@ func (fb *FrameBuffer) Add(celsius []float32, timestamp time.Time) {
 	if len(f.Celsius) != expected {
 		f.Celsius = make([]float32, expected)
 	}
-	copy(f.Celsius, celsius)
+	copy(f.Celsius, toStore)
 
 	fb.head = (fb.head + 1) % fb.maxFrames
 	if fb.count < fb.maxFrames {
@@ -194,10 +281,28 @@ func (fb *FrameBuffer) SampleInterval() time.Duration {
 
 // SetSampleInterval changes the minimum interval between stored frames.
 // A value of 0 means every frame is stored.
+// Resets the accumulator so partial interval data is not mixed across rate changes.
 func (fb *FrameBuffer) SetSampleInterval(d time.Duration) {
 	fb.mu.Lock()
 	defer fb.mu.Unlock()
 	fb.sampleInterval = d
+	fb.accum.reset()
+}
+
+// SetAggMode changes the aggregation mode and resets any partial accumulation.
+func (fb *FrameBuffer) SetAggMode(mode AggregationMode) {
+	fb.mu.Lock()
+	defer fb.mu.Unlock()
+	fb.aggMode = mode
+	fb.accum.reset()
+}
+
+// AggMode returns the current aggregation mode.
+func (fb *FrameBuffer) AggMode() AggregationMode {
+	fb.mu.RLock()
+	defer fb.mu.RUnlock()
+
+	return fb.aggMode
 }
 
 // Dims returns the current buffer frame dimensions.
@@ -232,15 +337,17 @@ type pbEntry struct {
 // PlaybackBuffer caches colorized celsius frames by recording frame index.
 // On QueryPixel it returns samples up to the current playback position.
 type PlaybackBuffer struct {
-	mu              sync.RWMutex
-	cache           map[int]*pbEntry
-	width           int
-	height          int
-	maxEntries      int
-	currentIdx      int           // current playback frame index
-	sampleInterval  time.Duration // minimum interval between stored frames (0 = every frame)
-	lastAddTime     time.Time     // timestamp of last stored frame
+	mu               sync.RWMutex
+	cache            map[int]*pbEntry
+	width            int
+	height           int
+	maxEntries       int
+	currentIdx       int           // current playback frame index
+	sampleInterval   time.Duration // minimum interval between stored frames (0 = every frame)
+	lastAddTime      time.Time     // timestamp of last stored frame
 	avgFrameInterval time.Duration // average inter-frame interval of the recording (for backfill skip)
+	aggMode          AggregationMode
+	accum            aggAccum
 
 	// Backfill state
 	cancelBackfill context.CancelFunc
@@ -270,7 +377,7 @@ func NewPlaybackBuffer(width, height int, totalFrames int, maxBytes int64) *Play
 // Add caches the celsius frame at the given recording frame index and
 // updates the current playback position. Used by UpdateFrame during playback.
 // Respects sampleInterval: frames whose timestamp is too close to the last
-// stored frame are dropped, identical to FrameBuffer behaviour.
+// stored frame are dropped or accumulated for aggregation.
 func (pb *PlaybackBuffer) Add(frameIdx int, celsius []float32, timestamp time.Time) {
 	pb.mu.Lock()
 	defer pb.mu.Unlock()
@@ -279,10 +386,21 @@ func (pb *PlaybackBuffer) Add(frameIdx int, celsius []float32, timestamp time.Ti
 	// Time-based throttle: drop frame if too soon since the last stored frame.
 	if pb.sampleInterval > 0 && !pb.lastAddTime.IsZero() &&
 		timestamp.Sub(pb.lastAddTime) < pb.sampleInterval {
+		if pb.aggMode != AggregateNone {
+			pb.accum.add(celsius)
+		}
+
 		return
 	}
+
+	toStore := celsius
+	if pb.aggMode != AggregateNone && pb.accum.count > 0 {
+		pb.accum.add(celsius)
+		toStore = pb.accum.drain(pb.aggMode)
+	}
+
 	pb.lastAddTime = timestamp
-	pb.store(frameIdx, celsius, timestamp)
+	pb.store(frameIdx, toStore, timestamp)
 }
 
 // store inserts a frame into the cache. Caller must hold pb.mu.
@@ -430,12 +548,13 @@ func (pb *PlaybackBuffer) SetMaxBytes(maxBytes int64) {
 
 // SetSampleInterval sets the minimum interval between stored frames.
 // A value of 0 means every frame is stored.
-// Resets the last-add timestamp so the very next frame is always accepted.
+// Resets the last-add timestamp and accumulator so the very next frame is always accepted.
 func (pb *PlaybackBuffer) SetSampleInterval(d time.Duration) {
 	pb.mu.Lock()
 	defer pb.mu.Unlock()
 	pb.sampleInterval = d
 	pb.lastAddTime = time.Time{}
+	pb.accum.reset()
 }
 
 // SampleInterval returns the current sample interval.
@@ -452,6 +571,22 @@ func (pb *PlaybackBuffer) SetAvgFrameInterval(d time.Duration) {
 	pb.mu.Lock()
 	defer pb.mu.Unlock()
 	pb.avgFrameInterval = d
+}
+
+// SetAggMode changes the aggregation mode and resets any partial accumulation.
+func (pb *PlaybackBuffer) SetAggMode(mode AggregationMode) {
+	pb.mu.Lock()
+	defer pb.mu.Unlock()
+	pb.aggMode = mode
+	pb.accum.reset()
+}
+
+// AggMode returns the current aggregation mode.
+func (pb *PlaybackBuffer) AggMode() AggregationMode {
+	pb.mu.RLock()
+	defer pb.mu.RUnlock()
+
+	return pb.aggMode
 }
 
 // StopBackfill cancels any running background backfill and waits for it to finish.
@@ -496,7 +631,8 @@ func (pb *PlaybackBuffer) StartBackfill(
 // backfillWork returns the list of frame indices that need to be loaded,
 // newest first, capped at pb.maxEntries and spaced by the skip derived from
 // the configured sample interval and the recording's average frame interval.
-func (pb *PlaybackBuffer) backfillWork(upToIdx int) []int {
+// It also returns the computed skip factor for use by the backfill workers.
+func (pb *PlaybackBuffer) backfillWork(upToIdx int) ([]int, int) {
 	pb.mu.RLock()
 	defer pb.mu.RUnlock()
 
@@ -515,15 +651,56 @@ func (pb *PlaybackBuffer) backfillWork(upToIdx int) []int {
 		}
 	}
 
-	return work
+	return work, skip
+}
+
+// aggregateBackfillSlot reads the remaining frames in a slot (idx+1…idx+skip-1),
+// colorizes them, and returns the per-pixel aggregate of all frames in the slot.
+// Returns celsius unchanged if aggregation is disabled or skip <= 1.
+func (pb *PlaybackBuffer) aggregateBackfillSlot(
+	ctx context.Context,
+	player *recording.Player,
+	idx, skip, upToIdx int,
+	aggMode AggregationMode,
+	celsius []float32,
+	params colorize.Params,
+	rotation int,
+) []float32 {
+	if aggMode == AggregateNone || skip <= 1 {
+		return celsius
+	}
+
+	var accum aggAccum
+	accum.add(celsius)
+
+	for j := 1; j < skip && idx+j < upToIdx; j++ {
+		if ctx.Err() != nil {
+			break
+		}
+
+		f2, _, err := player.ReadFrameAt(idx + j)
+		if err != nil {
+			continue
+		}
+
+		r2 := colorize.Colorize(f2, params).Rotate(rotation)
+		accum.add(r2.Celsius)
+	}
+
+	return accum.drain(aggMode)
 }
 
 // runBackfillWorker processes frame indices from workCh: reads, colorizes, and
-// caches each frame. It calls invalidate every 100 frames.
+// caches each frame. When aggMode is not AggregateNone and skip > 1, it also
+// reads the remaining frames in the slot (idx+1 … idx+skip-1) and aggregates
+// them before storing. It calls invalidate every 100 frames.
 func (pb *PlaybackBuffer) runBackfillWorker(
 	ctx context.Context,
 	workCh <-chan int,
 	player *recording.Player,
+	upToIdx int,
+	skip int,
+	aggMode AggregationMode,
 	params colorize.Params,
 	rotation int,
 	invalidate func(),
@@ -544,8 +721,10 @@ func (pb *PlaybackBuffer) runBackfillWorker(
 			continue
 		}
 
+		celsius := pb.aggregateBackfillSlot(ctx, player, idx, skip, upToIdx, aggMode, result.Celsius, params, rotation)
+
 		pb.mu.Lock()
-		pb.store(idx, result.Celsius, frameTime)
+		pb.store(idx, celsius, frameTime)
 		pb.mu.Unlock()
 
 		count := loaded.Add(1)
@@ -562,10 +741,14 @@ func (pb *PlaybackBuffer) runBackfill(
 	// Release mmap pages when backfill finishes (normal completion or cancellation)
 	defer player.ReleaseMmapPages()
 
-	work := pb.backfillWork(upToIdx)
+	work, skip := pb.backfillWork(upToIdx)
 	if len(work) == 0 {
 		return
 	}
+
+	pb.mu.RLock()
+	aggMode := pb.aggMode
+	pb.mu.RUnlock()
 
 	// Feed work items through a channel to N parallel workers
 	workers := runtime.NumCPU()
@@ -581,7 +764,7 @@ func (pb *PlaybackBuffer) runBackfill(
 		waitGroup.Add(1)
 		go func() {
 			defer waitGroup.Done()
-			pb.runBackfillWorker(ctx, workCh, player, params, rotation, invalidate, &loaded)
+			pb.runBackfillWorker(ctx, workCh, player, upToIdx, skip, aggMode, params, rotation, invalidate, &loaded)
 		}()
 	}
 
