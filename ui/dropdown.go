@@ -40,9 +40,6 @@ const (
 	dropdownItemVInsetDp     = 3  // top/bottom inset for dropdown items
 	dropdownDividerInsetDp   = 4  // top/bottom inset for the divider line
 
-	// Frame size calculation.
-	frameOverheadBytes = 64 // fixed overhead bytes added to each frame
-
 	// Effective camera interval when none is configured (≈25 fps).
 	defaultCameraInterval = 40 * time.Millisecond
 

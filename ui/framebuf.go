@@ -19,8 +19,8 @@ import (
 const (
 	memInfoMinFields   = 2    // minimum field count in a /proc/meminfo line
 	maxBackfillWorkers = 8    // maximum number of parallel backfill goroutines
-	float32ByteSize    = 4    // bytes per float32 pixel in the celsius frame buffer
-	frameBufOverhead   = 24   // fixed overhead bytes per stored frame (struct fields)
+	float32ByteSize    = 4  // bytes per float32 pixel in the celsius frame buffer
+	frameOverheadBytes = 48 // fixed overhead bytes per stored frame: time.Time (24) + []float32 header (24)
 	kbytesPerMB        = 1024 // kilobytes per megabyte (for /proc/meminfo conversion)
 	backfillChanMult   = 2    // channel buffer multiplier relative to worker count
 )
@@ -89,7 +89,7 @@ func NewFrameBuffer(width, height int, maxBytes int64) *FrameBuffer {
 func (fb *FrameBuffer) computeMax(width, height int) {
 	fb.width = width
 	fb.height = height
-	frameBytes := int64(width*height)*float32ByteSize + frameBufOverhead // float32 per pixel + struct overhead
+	frameBytes := int64(width*height)*float32ByteSize + frameOverheadBytes // float32 per pixel + struct overhead
 	fb.maxFrames = int(fb.maxBytes / frameBytes)
 	if fb.maxFrames < 1 {
 		fb.maxFrames = 1
