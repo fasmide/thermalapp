@@ -1181,7 +1181,7 @@ func (a *App) layoutImage(gtx layout.Context, result *colorize.Result) layout.Di
 	if cursorState.Active {
 		cursorLX := int(a.cursorPos.X) + cursorLabelXOff
 		cursorLY := int(a.cursorPos.Y) - cursorLabelYOff
-		a.drawTempLabel(gtx, cursorLX, cursorLY, cursorSpot.LastTemp(), cursorSpot.Color)
+		a.drawSpotLabel(gtx, cursorLX, cursorLY, cursorSpot.Index, cursorSpot.LastTemp(), "", cursorSpot.Color)
 	}
 
 	// NUC (shutter) indicator — top-right of image area
