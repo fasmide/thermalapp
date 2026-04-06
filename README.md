@@ -174,7 +174,7 @@ USB Camera ──> camera/p3.go             ──┐
 
 ### InfiRay Thermal Master P3 (primary)
 
-VID `0x3474`, PID `0x45A2` — 256×192 sensor. Full support: live streaming, shutter/NUC triggering, gain switching, radiometric recording and playback. Protocol is fully reverse-engineered; see [p3-ir-camera/P3_PROTOCOL.md](p3-ir-camera/P3_PROTOCOL.md).
+VID `0x3474`, PID `0x45A2` — 256×192 sensor. Full support: live streaming, shutter/NUC triggering, gain switching, radiometric recording and playback. 
 
 ### Seek Thermal CompactPRO (experimental)
 
@@ -199,10 +199,6 @@ type Camera interface {
 ```
 
 Implement the interface so that `ReadFrame()` returns a fully populated `Frame` — with `Celsius[]` in °C and `IR[]` as 8-bit AGC brightness — and the rest of the application requires no changes.
-
-## Protocol Reference
-
-See [METADATA-PROTOCOL.md](METADATA-PROTOCOL.md) for reverse-engineered metadata row register assignments (shutter detection, frame counters, sensor temperatures).
 
 ## License
 
