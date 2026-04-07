@@ -6,6 +6,8 @@ A real-time thermal camera viewer for the **InfiRay Thermal Master P3** and (exp
 
 > **No formal verification.** This application has no test suite and has not been validated against calibrated reference hardware. It works well for our own use cases — visualizing thermal data, recording scenes, and spot-measuring relative temperatures — but accuracy guarantees cannot be made. Use accordingly.
 
+![screenshot](https://github.com/user-attachments/assets/0c6b6638-c229-45a5-86cd-c4d2bb1f3cf9)
+
 ## Features
 
 - **Live thermal imaging** — 256×192 from the InfiRay P3; 320×240 from the Seek CompactPRO (experimental)
