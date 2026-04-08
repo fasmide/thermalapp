@@ -1,16 +1,18 @@
 # thermalapp
 
-A real-time thermal camera viewer for the **InfiRay Thermal Master P3** and (experimentally) the **Seek Thermal CompactPRO**, written in Go with a [Gio](https://gioui.org) UI.
+A real-time thermal camera viewer for the **InfiRay Thermal Master P3** and an unfinished **Seek Thermal CompactPRO** path, written in Go with a [Gio](https://gioui.org) UI.
 
 ![Go](https://img.shields.io/badge/Go-1.26-blue) ![Gio](https://img.shields.io/badge/Gio-v0.9-purple) ![Platform](https://img.shields.io/badge/Linux-USB-green)
 
 > **No formal verification.** This application has no test suite and has not been validated against calibrated reference hardware. It works well for our own use cases — visualizing thermal data, recording scenes, and spot-measuring relative temperatures — but accuracy guarantees cannot be made. Use accordingly.
 
+> **Seek CompactPRO status:** not currently usable for reliable thermography. The driver can stream frames, but the temperature calibration path is incomplete and absolute readings are wrong. Prefer the InfiRay P3 for any real use.
+
 ![screenshot](https://github.com/user-attachments/assets/0c6b6638-c229-45a5-86cd-c4d2bb1f3cf9)
 
 ## Features
 
-- **Live thermal imaging** — 256×192 from the InfiRay P3; 320×240 from the Seek CompactPRO (experimental)
+- **Live thermal imaging** — 256×192 from the InfiRay P3; 320×240 from the Seek CompactPRO (incomplete, not reliable)
 - **4 color palettes** — Inferno, Iron, Jet, Grayscale (cycle with `C`)
 - **AGC modes** — Percentile (auto-contrast) and Hardware (camera-side)
 - **Emissivity correction** — 39 material presets across 7 categories with per-spot override support
@@ -178,9 +180,13 @@ USB Camera ──> camera/p3.go             ──┐
 
 VID `0x3474`, PID `0x45A2` — 256×192 sensor. Full support: live streaming, shutter/NUC triggering, gain switching, radiometric recording and playback. 
 
-### Seek Thermal CompactPRO (experimental)
+### Seek Thermal CompactPRO (unfinished)
 
-VID `0x289d`, PID `0x0011` — 320×240 usable image from a 342×260 raw frame. The driver implements the Seek v5 USB protocol: calibration via TLUT for per-pixel Celsius values and AHE (Adaptive Histogram Equalization) for hardware AGC output. All application features (palettes, AGC modes, emissivity, recording, playback) work, but the Seek path has seen less real-world testing than the P3.
+VID `0x289d`, PID `0x0011` — 320×240 usable image from a 342×260 raw frame.
+
+Current status: the app can talk to the camera and display video, but the Seek temperature calibration path is incomplete. Hot/cold ordering is improved, yet absolute temperatures are still wrong because the vendor v5 thermography pipeline depends on external calibration assets that are not implemented here yet.
+
+Treat the Seek driver as a reverse-engineering work in progress, not a usable feature. Recording and playback still work at the app level, but the underlying Seek temperature data should not be trusted.
 
 ### Adding other cameras
 

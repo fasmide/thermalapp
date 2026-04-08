@@ -97,10 +97,12 @@ const (
 	seekMetaWordCount = 8
 
 	// seekCalStructSize is the size in bytes of the thermography parameter struct
-	// embedded somewhere in the 5120-byte factory calibration table.
-	// The struct is 0x60 bytes and is passed to thermography_setfeature(ctx, 0xc738, …)
-	// in libseekip.so. Its location within the table is not fixed at offset 0;
-	// readCalibrationTable scans the full table to find it.
+	// embedded somewhere in the factory calibration table.
+	// Reverse-engineering shows this small v5 parameter block is present in the
+	// factory blob, but the vendor thermography path also expects additional
+	// file-based calibration assets outside that blob. Its location within the
+	// table is not fixed at offset 0; readCalibrationTable scans the full table
+	// to find it.
 	seekCalStructSize = 0x60
 
 	// Byte offsets within the seekCalStructSize-byte thermography parameter struct.
@@ -138,24 +140,11 @@ const (
 	seekTempClampLow  = -40.0
 	seekTempClampHigh = 330.0
 
-	// TLUT blob magic values (little-endian uint32) found in libseekip.so tlut_begin_frame
-	// (0x4389c). The outer blob starts with seekTLUTOuterMagic; inner sub-blobs start with
-	// one of the six inner magic values.
-	seekTLUTOuterMagic  = 0xa57e6f5b // outer TLUT blob header magic
-	seekTLUTInnerMagic0 = 0x91fb7848 // inner sub-blob magic variants
-	seekTLUTInnerMagic1 = 0xbf27f930
-	seekTLUTInnerMagic2 = 0x86ad416d
-	seekTLUTInnerMagic3 = 0x1a452121
-	seekTLUTInnerMagic4 = 0xa0ac787c
-	seekTLUTInnerMagic5 = 0xa0ac787b
-
-	// seekCalDumpRowBytes is the number of bytes per row in hex dump log lines.
-	seekCalDumpRowBytes = 16
-
-	// seekCalVersion5 is the factory-cal struct version that uses the linear
-	// TLUT thermography algorithm (thermography_process_algorithm_v5_float in
-	// libseekip.so at 0x3e24c). For this version the Planck polynomial fields
-	// (coeff50/54/58/5c) are all zero and must not be used.
+	// seekCalVersion5 is the factory-cal struct version used by the newer vendor
+	// thermography path. The full vendor implementation is not reproduced here;
+	// this driver only uses the small factory struct plus a linear fallback.
+	// For this version the Planck polynomial fields (coeff50/54/58/5c) are all
+	// zero and must not be used.
 	seekCalVersion5 = 5
 
 	// seekFFCHeaderIdxShutterPixel is the index into rawBuf[] of the shutter
@@ -180,7 +169,7 @@ const (
 )
 
 // seekCalStruct holds the thermography parameter struct extracted from the
-// factory calibration table. Only the fields used by the v5 linear algorithm
+// factory calibration table. Only the fields used by the current v5 fallback
 // are stored; the remaining bytes in the 0x60-byte struct are ignored.
 //
 // Byte layout (little-endian unless noted):
@@ -215,25 +204,17 @@ type SeekCamera struct {
 	// factory calibration table. Non-nil after a successful readCalibrationTable().
 	factoryCal *seekCalStruct
 
-	// shutterPixel is the signed 16-bit ADC reading captured from the FFC frame
-	// header (word seekFFCHeaderIdxShutterPixel). It is the sensor's reference
-	// raw value at shutter temperature and is used as the v5 LUT origin.
-	shutterPixel int16
-
 	// shutterTempC is the shutter temperature in degrees Celsius, read from
 	// FFC frame header word seekFFCHeaderIdxShutterTemp (kelvin × 50).
 	shutterTempC float32
 
-	// celsiusLUT is a 65536-entry lookup table mapping pre-FFC raw uint16 pixel
+	// celsiusLUT is a 65536-entry lookup table mapping FFC-corrected uint16 pixel
 	// values to degrees Celsius. Rebuilt on each FFC frame. Non-nil only after
 	// the first FFC frame with valid v5 factory cal.
+	// Indexed by FFC-corrected values (seekFFCOffset = 0x4000 maps to shutterTempC).
 	celsiusLUT []float32
 
 	streaming bool
-
-	// frameCount is the total number of normal frames delivered since streaming started.
-	// Used to gate diagnostic logging to the first few frames.
-	frameCount int
 }
 
 var _ Camera = (*SeekCamera)(nil)
@@ -499,22 +480,27 @@ func (c *SeekCamera) initStartRunning() error {
 	return nil
 }
 
-// readCalibrationTable reads the factory calibration table (2560 words in 80 chunks of 32).
-// It accumulates all 5120 bytes and then scans every 4-byte-aligned offset for the
-// thermography parameter struct (seekCalStructSize bytes). The struct is not guaranteed
-// to start at byte 0; on this camera the first 96 bytes appear to be a sensor-config
-// struct (words 32/33 = 342/260 = frame dimensions). Scanning the full table is
-// robust against any firmware-defined placement of the thermography struct.
+// readCalibrationTable reads the factory calibration area in 32-word chunks.
+//
+// The camera exposes at least the first 2560 words (5120 bytes), which contain
+// the factory thermography struct used by this driver. Reverse-engineering shows
+// the remaining vendor v5 calibration path depends on separate external assets,
+// so we keep the runtime read bounded to the known-good factory table.
+//
+// The thermography parameter struct (seekCalStructSize bytes) is not guaranteed
+// to start at byte 0; on this camera the first 96 bytes appear to be a sensor-
+// config struct (words 32/33 = 342/260 = frame dimensions). Scanning the full
+// blob is robust against any firmware-defined placement of the thermography
+// struct.
 func (c *SeekCamera) readCalibrationTable() error {
 	const (
-		calTableWords = 2560 // total words in the factory cal table
-		calTableBytes = calTableWords * 2
-		calChunkWords = 32 // words per read
+		calTableWords = 2560 // known-good factory table size
+		calChunkWords = 32   // words per read
 		calChunkBytes = calChunkWords * 2
 	)
 
 	// calBuf accumulates all raw bytes from the calibration table.
-	calBuf := make([]byte, 0, calTableBytes)
+	calBuf := make([]byte, 0, calTableWords*seekCalBytesPerWord)
 
 	for addr := uint16(0); addr < calTableWords; addr += calChunkWords {
 		addrLE := make([]byte, seekCalAddrByteLen)
@@ -534,11 +520,6 @@ func (c *SeekCamera) readCalibrationTable() error {
 	}
 
 	log.Printf("seek cal: table read complete (%d bytes), scanning for thermography struct", len(calBuf))
-
-	// Scan the full factory cal blob for TLUT magic values and log all non-zero
-	// 16-byte rows. This covers the entire 5120-byte table so we can locate the
-	// TLUT outer blob (magic 0xa57e6f5b) and any inner sub-blobs.
-	c.dumpAndScanCalBlob(calBuf)
 
 	// Scan every 4-byte-aligned offset for a valid thermography struct.
 	// The struct starts with a uint32 version field in [1..6] and then has
@@ -563,79 +544,6 @@ func (c *SeekCamera) readCalibrationTable() error {
 	log.Printf("seek cal: factoryCal valid=%v", c.factoryCal != nil)
 
 	return nil
-}
-
-// dumpAndScanCalBlob logs all non-zero 16-byte rows in the factory calibration
-// blob and searches every 4-byte-aligned offset for TLUT magic values.
-// This covers the full 5120-byte table to locate the TLUT outer blob
-// (magic seekTLUTOuterMagic = 0xa57e6f5b) and any inner sub-blobs.
-func (c *SeekCamera) dumpAndScanCalBlob(buf []byte) {
-	// Emit every non-zero row from the full blob.
-	for off := 0; off+seekCalDumpRowBytes <= len(buf); off += seekCalDumpRowBytes {
-		row := buf[off : off+seekCalDumpRowBytes]
-
-		hasData := false
-
-		for _, b := range row {
-			if b != 0 {
-				hasData = true
-
-				break
-			}
-		}
-
-		if hasData {
-			log.Printf("seek cal[%04x]: % 02x", off, row)
-		}
-	}
-
-	// Search every 4-byte-aligned offset for TLUT magic values.
-	tlutMagics := [...]uint32{
-		seekTLUTOuterMagic,
-		seekTLUTInnerMagic0,
-		seekTLUTInnerMagic1,
-		seekTLUTInnerMagic2,
-		seekTLUTInnerMagic3,
-		seekTLUTInnerMagic4,
-		seekTLUTInnerMagic5,
-	}
-
-	for off := 0; off+seekCalFieldBytes <= len(buf); off += seekCalFieldBytes {
-		word := binary.LittleEndian.Uint32(buf[off : off+seekCalFieldBytes])
-
-		for _, magic := range tlutMagics {
-			if word == magic {
-				log.Printf("seek cal: TLUT magic 0x%08x found at byte offset 0x%04x (word %d)",
-					word, off, off/seekCalBytesPerWord)
-			}
-		}
-	}
-}
-
-// logFramePixelStats logs min, max, and mean of a uint16 pixel slice.
-// Used to diagnose temperature-conversion problems during development.
-func logFramePixelStats(label string, pixels []uint16) {
-	if len(pixels) == 0 {
-		return
-	}
-
-	var minVal, maxVal uint16 = pixels[0], pixels[0]
-	var sum uint64
-
-	for _, val := range pixels {
-		if val < minVal {
-			minVal = val
-		}
-
-		if val > maxVal {
-			maxVal = val
-		}
-
-		sum += uint64(val)
-	}
-
-	mean := sum / uint64(len(pixels))
-	log.Printf("seek %s: min=%d max=%d mean=%d count=%d", label, minVal, maxVal, mean, len(pixels))
 }
 
 // shutdownDevice sends the triple SET_OPERATION_MODE(0) shutdown sequence.
@@ -734,10 +642,9 @@ func (c *SeekCamera) storeFFCFrame() {
 
 	// Version 5: shutter pixel and temperature are encoded directly in the
 	// FFC frame header. header[5] = raw ADC at shutter; header[6] = K×50.
-	c.shutterPixel = int16(c.rawBuf[seekFFCHeaderIdxShutterPixel])
 	c.shutterTempC = float32(c.rawBuf[seekFFCHeaderIdxShutterTemp])/seekFFCShutterTempKelvinScale - kelvinOffset
-	log.Printf("seek: v5 FFC — shutterPixel=%d shutterTempC=%.2f°C",
-		c.shutterPixel, c.shutterTempC)
+	log.Printf("seek: v5 FFC - shutterPixel=%d shutterTempC=%.2fC",
+		int16(c.rawBuf[seekFFCHeaderIdxShutterPixel]), c.shutterTempC)
 	c.celsiusLUT = c.buildCelsiusLUTV5(c.factoryCal)
 }
 
@@ -948,10 +855,11 @@ func (c *SeekCamera) calcNeighborMean(img []uint16, pixX, pixY int) uint16 {
 // ReadFrame reads one frame from the Seek camera, applies FFC and dead pixel
 // correction, and returns the processed frame.
 //
-// Frame.Celsius is populated with per-pixel absolute temperatures derived from
-// the pre-FFC raw pixels via the v5 TLUT model. Dead pixels are corrected in
-// the raw domain first so that no spuriously cold/hot stuck pixels appear in
-// the temperature output.
+// Frame.Celsius is populated with per-pixel temperatures derived from
+// FFC-corrected pixels via the current v5 linear fallback. FFC removes
+// fixed-pattern noise before temperature conversion, which is essential for a
+// cleaner temperature image even though the absolute calibration is still
+// incomplete.
 func (c *SeekCamera) ReadFrame() (*Frame, error) {
 	if !c.streaming {
 		return nil, fmt.Errorf("not streaming")
@@ -966,17 +874,9 @@ func (c *SeekCamera) ReadFrame() (*Frame, error) {
 	// Extract ROI (pre-FFC raw pixels).
 	roi := c.extractROI()
 
-	// Apply FFC correction for display.
+	// Apply FFC correction — removes fixed-pattern noise for both display and
+	// temperature conversion.
 	corrected := c.applyFFC(roi)
-
-	// Log pixel statistics for the first few frames to aid calibration debugging.
-	const seekPixelStatFrames = 3
-	if c.frameCount < seekPixelStatFrames {
-		logFramePixelStats("raw-roi", roi)
-		logFramePixelStats("ffc-corrected", corrected)
-	}
-
-	c.frameCount++
 
 	if len(c.deadPixelOrder) > 0 {
 		corrected = c.applyDeadPixelFilter(corrected)
@@ -987,20 +887,17 @@ func (c *SeekCamera) ReadFrame() (*Frame, error) {
 		Height: seekImageH,
 	}
 
-	// Dead pixels in the raw ROI have invalid values (e.g. 0) that would
-	// produce spuriously cold stuck pixels via the LUT. Correct them in
-	// the raw domain first, using the same neighbour-mean filter used for
-	// the FFC-corrected display path.
-	cleanROI := roi
-	if len(c.deadPixelOrder) > 0 {
-		cleanROI = c.applyDeadPixelFilter(roi)
-	}
-
-	// Pre-compute per-pixel Celsius from the dead-pixel-corrected raw
-	// pixels using the v5 TLUT.
-	celsius := make([]float32, len(cleanROI))
-	for idx, raw := range cleanROI {
-		celsius[idx] = c.celsiusLUT[raw]
+	// Pre-compute per-pixel Celsius from the FFC-corrected (dead-pixel-filtered)
+	// pixels using the current v5 fallback LUT. Using FFC-corrected values here
+	// is critical:
+	// it removes per-pixel fixed-pattern noise that would otherwise appear as
+	// temperature noise in Percentile AGC mode. The LUT is anchored so that
+	// seekFFCOffset (0x4000) maps to shutterTempC.
+	celsius := make([]float32, len(corrected))
+	if c.celsiusLUT != nil {
+		for idx, px := range corrected {
+			celsius[idx] = c.celsiusLUT[px]
+		}
 	}
 
 	frame.Celsius = celsius
@@ -1011,8 +908,8 @@ func (c *SeekCamera) ReadFrame() (*Frame, error) {
 	return frame, nil
 }
 
-// thermalToIR converts 16-bit thermal values to 8-bit using adaptive histogram
-// equalization (matching the reference implementation's convertToGreyScale).
+// thermalToIR converts 16-bit thermal values to 8-bit using a simple linear
+// min/max stretch.
 func (c *SeekCamera) thermalToIR(thermal []uint16) []uint8 {
 	count := len(thermal)
 	result := make([]uint8, count)
@@ -1101,30 +998,38 @@ func (c *SeekCamera) SetGain(_ GainMode) error {
 // --- factory calibration helpers ---
 
 // buildCelsiusLUTV5 constructs a 65536-entry lookup table for version-5
-// factory calibration, using the global linear approximation of the TLUT
-// algorithm (thermography_process_algorithm_v5_float in libseekip.so at
-// 0x3e24c). The table is indexed by the pre-FFC raw pixel value.
+// factory calibration, using the global linear fallback approximation of the
+// vendor TLUT algorithm (thermography_process_algorithm_v5_float in
+// libseekip.so at 0x3e24c). The table is indexed by FFC-corrected pixel
+// values.
 //
-// The native v5 algorithm uses per-pixel slope/base arrays computed from a
-// TLUT blob that is not present in the factory calibration table. We use the
-// best available global linear approximation:
+// The native v5 algorithm uses more calibration data than the small factory
+// struct alone provides. Reverse-engineering of libseekip.so shows a file-based
+// loader for assets such as CintLut.bin, HG_Delta.bin, FlatField.bin, and
+// ThermAdjust.bin, so this fallback remains a stopgap until that external
+// calibration path is reconstructed:
 //
-//	slope = seekCalV5SlopeScale / outPoly1          (°C per raw count)
-//	tempC = shutterTempC + (float32(rawPx) - float32(shutterPixel)) * slope
+//	slope = seekCalV5SlopeScale / outPoly1
+//	tempC = shutterTempC + (float32(ffcPx) - seekFFCOffset) * slope
 //
-// Where shutterTempC and shutterPixel are captured from the FFC frame header.
+// We now keep the slope positive because both the live camera data and the
+// vendor simulation asset move in that direction after FFC correction:
+//   - live cup scene: hotter cup region had HIGHER corrected counts than wall,
+//     and the negative-slope fallback inverted hot/cold ordering
+//   - vendor simulation asset thermal.bin fits thermography ~= 0.02122*filtered
+//   - 39.81 with correlation 0.99967, i.e. higher filtered counts map hotter
 //
-// Verified with Python against real frame data (raw_mean=6816, shutter=7429,
-// shutterTemp=26.85 °C): room-temperature pixels (6816 raw) map to ~22.6 °C
-// and warm objects (8459 raw) map to ~34 °C — physically correct for an
-// indoor scene.
+// The LUT anchor remains exact:
+//
+//	index 0x4000 (=seekFFCOffset) → shutterTempC
 func (c *SeekCamera) buildCelsiusLUTV5(cal *seekCalStruct) []float32 {
-	slope := seekCalV5SlopeScale / cal.outPoly1 // °C per raw ADC count
+	// Positive fallback slope: hotter FFC-corrected pixels map hotter.
+	slope := seekCalV5SlopeScale / cal.outPoly1 // °C per corrected count
 
 	lut := make([]float32, math.MaxUint16+1)
 
-	for rawIdx := range math.MaxUint16 + 1 {
-		tempC := c.shutterTempC + (float32(rawIdx)-float32(c.shutterPixel))*slope
+	for idx := range math.MaxUint16 + 1 {
+		tempC := c.shutterTempC + (float32(idx)-seekFFCOffset)*slope
 
 		if tempC < seekTempClampLow {
 			tempC = seekTempClampLow
@@ -1132,11 +1037,13 @@ func (c *SeekCamera) buildCelsiusLUTV5(cal *seekCalStruct) []float32 {
 			tempC = seekTempClampHigh
 		}
 
-		lut[rawIdx] = tempC
+		lut[idx] = tempC
 	}
 
-	log.Printf("seek: v5 celsiusLUT built — slope=%.6f °C/count, lut[shutterPixel]=%.2f°C",
-		slope, lut[c.shutterPixel])
+	log.Printf(
+		"seek: v5 celsiusLUT built - slope=%.6f C/count (fallback, warmer->higher), lut[0x4000]=%.2fC (shutterTempC=%.2fC)",
+		slope, lut[seekFFCOffset], c.shutterTempC,
+	)
 
 	return lut
 }
